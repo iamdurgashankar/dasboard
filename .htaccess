@@ -15,6 +15,12 @@ Options -Indexes
     Header set Referrer-Policy "strict-origin-when-cross-origin"
 </IfModule>
 
-# Handle API routing (optional, but good for clean URLs)
-# RewriteEngine On
-# RewriteRule ^api/(.*)$ api/$1.php [L]
+# Handle SPA Refreshes and Routing
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+    RewriteRule ^index\.html$ - [L]
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule . index.html [L]
+</IfModule>
