@@ -1,0 +1,7 @@
+{
+  "name": "DevInquire Pro Dashboard",
+  "description": "An advanced developer analytics and AI-powered inquiry dashboard for tracking project health, team velocity, and technical insights using Gemini.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
