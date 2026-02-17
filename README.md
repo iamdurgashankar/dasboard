@@ -1,20 +1,55 @@
 <div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+<img width="1200" height="475" alt="DevInquire Header" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
 </div>
 
-# Run and deploy your AI Studio app
+# DevInquire Pro Dashboard
+**Advanced Administrative Orchestration & Telemetry Terminal**
 
-This contains everything you need to run your app locally.
+A premium, secure, and AI-powered administrative console for the DevInquire ecosystem, featuring high-fidelity data visualization and real-time system signaling.
 
-View your app in AI Studio: https://ai.studio/apps/drive/16zGIqi_bh11RB2x0g7FX08qmfELFOoxf
+## 🚀 Overview
+The DevInquire Pro Dashboard is built with a decoupled "Headless" architecture:
+- **Frontend**: A performance-optimized React 19 application built with Vite 6.
+- **Backend API**: A secure, high-velocity Pure PHP framework using PDO.
+- **Intelligence**: Integrated Google Gemini AI for metrics summarization and technical orchestration.
 
-## Run Locally
+## ✨ Key Features
+- **Real-time Signal Ledger**: Identity-aware notification terminal with 30s telemetry polling.
+- **AI Orchestration**: Integrated Lead Assistant for metrics analysis and blog content generation.
+- **Dynamic Personalization**: Time-aware greetings and role-based identity context.
+- **Data Visualization**: Interactive system health and velocity tracking via Recharts.
+- **Build Optimization**: Advanced manual chunk splitting for superior cacheability and load times.
 
-**Prerequisites:**  Node.js
+## 🔒 Security Hardening
+- **Statful CSRF Protection**: Mandatory token validation on all mutating operations.
+- **Neural Identity Vault**: Secure session management and Bcrypt password hashing.
+- **SQLi Prevention**: 100% usage of PDO prepared statements in the API layer.
+- **XSS Sanitization**: Centralized input filtering and output escaping.
 
+## 📥 Setup & Installation
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### 1. Requirements
+- **Runtime**: Node.js v18+ & PHP v7.4+
+- **Database**: MySQL v5.7+ or v8.0+
+
+### 2. Deployment Steps
+1. **Dependency Sync**: 
+   ```bash
+   npm install
+   ```
+2. **Environment Configuration**: 
+   Add your `GEMINI_API_KEY` to `.env.local`.
+3. **Database Ledger**: 
+   Configure your live MySQL credentials in `includes/config.php`.
+4. **System Initialization**: 
+   Run `setup.php` on your server to provision the database schema and default admin.
+   > **Note**: Initial credentials: `admin@devinquire.com` / `DevInquire2025!` (Change immediately).
+
+### 3. Build Orchestration
+```bash
+# Generate optimized production assets
+npm run build
+```
+
+---
+**© 2026 DevInquire | Neural Architecture for Modern Developers**
