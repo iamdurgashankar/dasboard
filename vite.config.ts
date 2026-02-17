@@ -28,17 +28,42 @@ export default defineConfig(({ mode }) => {
       }
     },
     build: {
-      chunkSizeWarningLimit: 1200,
+      chunkSizeWarningLimit: 2000,
       rollupOptions: {
         output: {
-          manualChunks(id) {
+          manualChunks(id: string) {
             if (id.includes('node_modules')) {
-              if (id.includes('react-dom') || id.includes('react/')) return 'vendor-framework';
-              if (id.includes('recharts')) return 'vendor-charts';
-              if (id.includes('react-syntax-highlighter') || id.includes('remark') || id.includes('react-markdown')) return 'vendor-content';
-              if (id.includes('@google/genai')) return 'vendor-ai';
-              if (id.includes('react-router-dom') || id.includes('@remix-run')) return 'vendor-routing';
-              return 'vendor-core';
+              // Engine: React, Router, and core sub-dependencies
+              if (
+                id.includes('react-dom') ||
+                id.includes('react/') ||
+                id.includes('react-router') ||
+                id.includes('scheduler') ||
+                id.includes('object-assign') ||
+                id.includes('tiny-invariant') ||
+                id.includes('@remix-run')
+              ) {
+                return 'vendor-engine';
+              }
+              // Data Viz
+              if (id.includes('recharts') || id.includes('d3')) {
+                return 'vendor-charts';
+              }
+              // Content & Syntax Highlighting
+              if (
+                id.includes('react-syntax-highlighter') ||
+                id.includes('prismjs') ||
+                id.includes('lowlight') ||
+                id.includes('react-markdown') ||
+                id.includes('remark') ||
+                id.includes('micromark')
+              ) {
+                return 'vendor-content';
+              }
+              // AI Orchestration
+              if (id.includes('@google/genai')) {
+                return 'vendor-ai';
+              }
             }
           }
         }
