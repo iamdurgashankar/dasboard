@@ -49,8 +49,25 @@ try {
     $tables = $stmt->fetchAll(PDO::FETCH_COLUMN);
 
     echo "Tables found: " . count($tables) . "\n";
-    foreach ($tables as $table) {
-        echo " - $table\n";
+    $required = ['users', 'projects', 'tasks', 'blog_posts'];
+    foreach ($required as $req) {
+        if (in_array($req, $tables)) {
+            $count = $pdo->query("SELECT COUNT(*) FROM $req")->fetchColumn();
+            echo "[OK] Table '$req' exists. Row count: $count\n";
+
+            if ($req === 'users') {
+                $cols = $pdo->query("DESCRIBE users")->fetchAll(PDO::FETCH_ASSOC);
+                echo " - Columns: " . implode(", ", array_column($cols, 'Field')) . "\n";
+                $admin = $pdo->query("SELECT id FROM users WHERE email = 'admin@devinquire.com'")->fetch();
+                if ($admin) {
+                    echo "[OK] Admin user found.\n";
+                } else {
+                    echo "[FAIL] Admin user NOT found.\n";
+                }
+            }
+        } else {
+            echo "[FAIL] Table '$req' is MISSING.\n";
+        }
     }
 
 } catch (PDOException $e) {
