@@ -61,6 +61,6 @@ try {
 
 } catch (Exception $e) {
     error_log("Login API Error: " . $e->getMessage());
-    sendJsonResponse("error", "System fault during authentication.", null, 500);
+    sendJsonResponse("error", "Login Error: " . $e->getMessage(), null, 500);
 }
 ?>

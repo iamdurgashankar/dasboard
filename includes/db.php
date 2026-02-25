@@ -28,7 +28,7 @@ function getDbConnection()
             http_response_code(500);
             echo json_encode([
                 "status" => "error",
-                "message" => "Internal System Fault: Infrastructure unreachable."
+                "message" => "DB Error: " . $e->getMessage()
             ]);
             exit;
         }
