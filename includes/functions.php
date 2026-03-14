@@ -5,6 +5,26 @@
 
 require_once __DIR__ . '/config.php';
 
+// Global CORS Handling
+if (defined('API_ALLOWED_ORIGINS')) {
+    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+    // Allow if origin is in the allowed list, or if it's the exact same host (relative paths)
+    if (empty($origin) || in_array($origin, API_ALLOWED_ORIGINS)) {
+        if (!empty($origin)) {
+            header("Access-Control-Allow-Origin: $origin");
+        }
+        header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+        header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, X-CSRF-Token");
+        header("Access-Control-Allow-Credentials: true");
+    }
+}
+
+// Handle preflight OPTIONS request globally
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit(0);
+}
+
 /**
  * Return a standardized JSON response and exit
  */

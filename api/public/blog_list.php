@@ -7,20 +7,7 @@
 require_once __DIR__ . '/../../includes/functions.php';
 require_once __DIR__ . '/../../includes/db.php';
 
-// CORS Handling
-if (defined('API_ALLOWED_ORIGINS')) {
-    $origin = $_SERVER['HTTP_ORIGIN'] ?? '';
-    if (in_array($origin, API_ALLOWED_ORIGINS)) {
-        header("Access-Control-Allow-Origin: $origin");
-        header("Access-Control-Allow-Methods: GET, OPTIONS");
-        header("Access-Control-Allow-Headers: Content-Type");
-    }
-}
 
-// Handle preflight OPTIONS request
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    exit(0);
-}
 
 try {
     $db = getDbConnection();
