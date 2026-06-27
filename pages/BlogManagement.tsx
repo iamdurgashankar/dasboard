@@ -35,6 +35,7 @@ const BlogManagement: React.FC = () => {
         const mapped = res.data.map((b: any) => ({
           ...b,
           id: b.id.toString(),
+          status: b.status === 'published' ? 'synced' : b.status,
           author: b.author_name || 'System',
           date: b.created_at.split(' ')[0]
         }));
@@ -364,18 +365,35 @@ const BlogManagement: React.FC = () => {
       )}
 
       {!isEditorOpen && (
-        <div className="bg-indigo-600/5 border border-indigo-600/10 rounded-2xl p-6 mt-12 flex items-center justify-between">
-          <div className="flex gap-4 items-center">
-            <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-xl">
-              <i className="fas fa-cloud-upload-alt text-white"></i>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-12 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="bg-indigo-600/5 border border-indigo-600/10 rounded-2xl p-6 flex items-center justify-between">
+            <div className="flex gap-4 items-center">
+              <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-xl">
+                <i className="fas fa-cloud-upload-alt text-white"></i>
+              </div>
+              <div>
+                <h4 className="font-bold text-indigo-100">Sync Pipeline Status</h4>
+                <p className="text-sm text-indigo-300/60">Connected to local-mysql.devinquire.com</p>
+              </div>
             </div>
-            <div>
-              <h4 className="font-bold text-indigo-100">Sync Pipeline Status</h4>
-              <p className="text-sm text-indigo-300/60">Connected to prod-ap-south-1.devinquire.com</p>
+            <div className="hidden sm:block px-4 py-2 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-full border border-emerald-500/20">
+              HEALTHY
             </div>
           </div>
-          <div className="hidden sm:block px-4 py-2 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-full border border-emerald-500/20">
-            HEALTHY
+
+          <div className="bg-indigo-600/5 border border-indigo-600/10 rounded-2xl p-6 flex items-center justify-between">
+            <div className="flex gap-4 items-center">
+              <div className="w-12 h-12 bg-indigo-600 rounded-xl flex items-center justify-center text-xl">
+                <i className="fas fa-robot text-white"></i>
+              </div>
+              <div>
+                <h4 className="font-bold text-indigo-100">AI Daily Auto-Publishing</h4>
+                <p className="text-sm text-indigo-300/60">Scheduled daily at 8:00 PM (Rotational Categories)</p>
+              </div>
+            </div>
+            <div className="hidden sm:block px-4 py-2 bg-emerald-500/10 text-emerald-400 text-xs font-bold rounded-full border border-emerald-500/20">
+              ACTIVE
+            </div>
           </div>
         </div>
       )}

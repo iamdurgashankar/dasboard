@@ -2,7 +2,7 @@
  * Centralized API Service for DevInquire
  */
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 export const api = {
     async fetch(endpoint: string, options: RequestInit = {}) {
@@ -19,6 +19,12 @@ export const api = {
 
         const response = await fetch(`${API_BASE}${endpoint}`, defaultOptions);
         const result = await response.json();
+
+        if (response.status === 401) {
+            localStorage.removeItem('devinquire_user');
+            localStorage.removeItem('di_csrf_token');
+            window.location.reload();
+        }
 
         if (!response.ok) {
             throw new Error(result.message || 'System fault.');

@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && cp -R api includes .htaccess setup.php full_database_setup.sql schema.sql dist/",
+    "server": "npm --prefix server run dev",
+    "backend": "npm --prefix server start",
+    "seed": "npm --prefix server run seed",
+    "cron:generate-blog": "node server/cron/generateBlog.js",
+    "build": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {

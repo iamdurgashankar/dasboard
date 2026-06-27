@@ -1,0 +1,55 @@
+# DevInquire Production Nginx Configuration Example
+# Place this inside your Nginx sites-available folder (e.g., /etc/nginx/sites-available/devinquire)
+
+server {
+    listen 80;
+    server_name dashboard.devinquire.com;
+
+    # Redirect all HTTP requests to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name dashboard.devinquire.com;
+
+    # SSL Certificate Paths (adjust according to your provider, e.g., Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/dashboard.devinquire.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/dashboard.devinquire.com/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # Root folder for built React Frontend (dist/ directory of your frontend build)
+    root /var/www/devinquire-dashboard/dist;
+    index index.html;
+
+    # Handle React routing (fallback to index.html for SPA routes)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Proxy /api requests to the running Node.js / Express Backend
+    location /api {
+        proxy_pass http://127.0.0.1:8001; # Point to the port where Express is running
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_cache_bypass $http_upgrade;
+        
+        # Pass client IP and protocols for secure session cookies
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Compression for production speed
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 10240;
+    gzip_proxied any;
+    gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml application/javascript;
+    gzip_disable "MSIE [1-6]\.";
+}
