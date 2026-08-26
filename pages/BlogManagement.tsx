@@ -12,6 +12,9 @@ const BlogManagement: React.FC = () => {
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [postToSync, setPostToSync] = useState<BlogPost | null>(null);
+  const [editingPostId, setEditingPostId] = useState<string | null>(null);
+  const [postToDelete, setPostToDelete] = useState<BlogPost | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const [newPost, setNewPost] = useState<Partial<BlogPost>>({
     title: '',
@@ -37,7 +40,7 @@ const BlogManagement: React.FC = () => {
           id: b.id.toString(),
           status: b.status === 'published' ? 'synced' : b.status,
           author: b.author_name || 'System',
-          date: b.created_at.split(' ')[0]
+          date: b.created_at ? b.created_at.split(' ')[0] : new Date().toISOString().split('T')[0]
         }));
         setBlogs(mapped);
       } else {
@@ -65,15 +68,58 @@ const BlogManagement: React.FC = () => {
   const handleSaveDraft = async () => {
     if (!newPost.title) return;
     try {
-      const res = await api.blog.create(newPost);
+      let res: { status: string; message?: string; data?: any };
+      if (editingPostId) {
+        res = await api.blog.update({ id: editingPostId, ...newPost });
+      } else {
+        res = await api.blog.create(newPost);
+      }
       if (res.status === 'success') {
         setIsEditorOpen(false);
+        setEditingPostId(null);
         setNewPost({ title: '', excerpt: '', content: '', category: 'Engineering', tags: [] });
         fetchBlogs();
       }
     } catch (err) {
       console.error("Draft Save error:", err);
     }
+  };
+
+  const handleEditPost = (blog: BlogPost) => {
+    setEditingPostId(String(blog.id));
+    setNewPost({
+      title: blog.title,
+      excerpt: blog.excerpt,
+      content: blog.content,
+      category: blog.category,
+      tags: Array.isArray(blog.tags) ? blog.tags : []
+    });
+    setIsEditorOpen(true);
+  };
+
+  const confirmDelete = async () => {
+    if (!postToDelete) return;
+    setIsDeleting(true);
+    try {
+      const res = await api.blog.delete(postToDelete.id);
+      if (res.status === 'success') {
+        setPostToDelete(null);
+        fetchBlogs();
+      }
+    } catch (err) {
+      console.error("Delete error:", err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const getLiveBlogUrl = (blog: BlogPost) => {
+    const slugOrId = blog.slug || blog.id;
+    return `https://devinquire.com/blog/${slugOrId}`;
+  };
+
+  const openBlogListOnSite = () => {
+    window.open('https://devinquire.com/blog', '_blank', 'noopener,noreferrer');
   };
 
   const handleAiDraft = async () => {
@@ -137,12 +183,25 @@ const BlogManagement: React.FC = () => {
           <h1 className="text-2xl font-bold">Blog Management</h1>
           <p className="text-slate-400">Manage, draft, and sync your technical articles with devinquire.com</p>
         </div>
-        <button
-          onClick={() => setIsEditorOpen(true)}
-          className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-sm font-bold shadow-lg shadow-indigo-600/20 transition-all flex items-center gap-2"
-        >
-          <i className="fas fa-plus"></i> Create New Post
-        </button>
+        <div className="flex gap-2 flex-wrap">
+          <button
+            onClick={openBlogListOnSite}
+            className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 rounded-xl text-sm font-semibold text-slate-200 border border-slate-700 transition-all flex items-center gap-2"
+            title="Open public blog list on devinquire.com"
+          >
+            <i className="fas fa-external-link-alt"></i> View Live Site /blog
+          </button>
+          <button
+            onClick={() => {
+              setEditingPostId(null);
+              setNewPost({ title: '', excerpt: '', content: '', category: 'Engineering', tags: [] });
+              setIsEditorOpen(true);
+            }}
+            className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 rounded-xl text-sm font-bold shadow-lg shadow-indigo-600/20 transition-all flex items-center gap-2"
+          >
+            <i className="fas fa-plus"></i> Create New Post
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -173,7 +232,7 @@ const BlogManagement: React.FC = () => {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden animate-in zoom-in-95 duration-300">
           <div className="p-6 border-b border-slate-800 flex items-center justify-between bg-slate-950/30">
             <h3 className="font-bold flex items-center gap-2">
-              <i className="fas fa-edit text-indigo-400"></i> New Article Draft
+              <i className="fas fa-edit text-indigo-400"></i> {editingPostId ? 'Edit Article' : 'New Article Draft'}
             </h3>
             <div className="flex gap-2">
               <button
@@ -185,7 +244,10 @@ const BlogManagement: React.FC = () => {
                 AI Write with Gemini
               </button>
               <button
-                onClick={() => setIsEditorOpen(false)}
+                onClick={() => {
+                  setIsEditorOpen(false);
+                  setEditingPostId(null);
+                }}
                 className="px-4 py-1.5 hover:bg-slate-800 text-slate-400 rounded-lg text-xs font-semibold transition-all"
               >
                 Cancel
@@ -286,9 +348,16 @@ const BlogManagement: React.FC = () => {
               <div className="w-full md:w-auto flex flex-col items-center gap-3">
                 <div className="flex items-center gap-2 mb-2">
                   {blog.status === 'synced' ? (
-                    <span className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
+                    <a
+                      href={getLiveBlogUrl(blog)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium hover:text-emerald-300 transition-colors cursor-pointer"
+                      title="Open live article on devinquire.com"
+                    >
                       <i className="fas fa-check-circle"></i> Live on devinquire.com
-                    </span>
+                      <i className="fas fa-external-link-alt text-[10px] opacity-60"></i>
+                    </a>
                   ) : (
                     <span className="flex items-center gap-1.5 text-xs text-amber-400 font-medium">
                       <i className="fas fa-clock"></i> Pending Sync
@@ -296,9 +365,18 @@ const BlogManagement: React.FC = () => {
                   )}
                 </div>
 
-                <div className="flex gap-2 w-full">
-                  <button className="flex-1 md:flex-none px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-semibold transition-all">
-                    Edit
+                <div className="flex gap-2 w-full flex-wrap">
+                  <button
+                    onClick={() => handleEditPost(blog)}
+                    className="flex-1 md:flex-none px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <i className="fas fa-edit text-xs"></i> Edit
+                  </button>
+                  <button
+                    onClick={() => setPostToDelete(blog)}
+                    className="flex-1 md:flex-none px-4 py-2 bg-rose-950/40 hover:bg-rose-900/60 text-rose-400 border border-rose-900/40 hover:border-rose-800/60 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-1.5"
+                  >
+                    <i className="fas fa-trash text-xs"></i> Delete
                   </button>
                   <button
                     onClick={() => initiateSync(blog)}
@@ -359,6 +437,54 @@ const BlogManagement: React.FC = () => {
             <div className="px-8 py-4 bg-slate-950/50 border-t border-slate-800 flex items-center justify-center gap-2">
               <i className="fas fa-info-circle text-slate-600 text-[10px]"></i>
               <p className="text-[10px] text-slate-600 font-bold uppercase tracking-tighter">Production sync takes approx. 2 seconds</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {postToDelete && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in-95 duration-300">
+            <div className="p-8 text-center">
+              <div className="w-20 h-20 bg-rose-500/10 border border-rose-500/20 text-rose-500 rounded-3xl flex items-center justify-center mx-auto mb-6 text-3xl shadow-inner">
+                <i className="fas fa-trash-alt"></i>
+              </div>
+              <h3 className="text-xl font-bold text-slate-100 mb-2">Delete Article?</h3>
+              <p className="text-slate-400 text-sm leading-relaxed mb-6">
+                You are about to permanently delete <span className="text-rose-400 font-bold">"{postToDelete.title}"</span>. This action cannot be undone.
+                {postToDelete.status === 'synced' && (
+                  <span className="block mt-2 text-amber-400">
+                    <i className="fas fa-exclamation-triangle mr-1"></i>
+                    Note: Deleting from Dashboard will not auto-remove it from devinquire.com. Use a re-sync the main site after deletion.
+                  </span>
+                )}
+              </p>
+              <div className="flex flex-col gap-3">
+                <button
+                  onClick={confirmDelete}
+                  disabled={isDeleting}
+                  className="w-full py-4 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-2xl font-bold text-sm shadow-xl shadow-rose-600/20 transition-all flex items-center justify-center gap-3 uppercase tracking-widest"
+                >
+                  {isDeleting ? (
+                    <i className="fas fa-circle-notch fa-spin"></i>
+                  ) : (
+                      <i className="fas fa-trash"></i>
+                    )}
+                  {isDeleting ? 'Deleting...' : 'Confirm Permanent Delete'}
+                </button>
+                <button
+                  onClick={() => setPostToDelete(null)}
+                  disabled={isDeleting}
+                  className="w-full py-4 bg-slate-950 hover:bg-slate-800 text-slate-500 rounded-2xl font-bold text-sm transition-all uppercase tracking-widest disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            <div className="px-8 py-4 bg-slate-950/50 border-t border-slate-800 flex items-center justify-center gap-2">
+              <i className="fas fa-shield-alt text-slate-600 text-[10px]"></i>
+              <p className="text-[10px] text-slate-600 font-bold uppercase tracking-tighter">ID: {postToDelete.id}</p>
             </div>
           </div>
         </div>

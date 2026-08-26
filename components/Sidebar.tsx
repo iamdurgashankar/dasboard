@@ -31,6 +31,11 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpen, setI
   // Filter items based on RBAC
   const navItems = allNavItems.filter(item => allowedTabs.includes(item.id));
 
+  const openExternalBlog = (e: React.MouseEvent) => {
+    e.preventDefault();
+    window.open('https://devinquire.com/blog', '_blank', 'noopener,noreferrer');
+  };
+
   const handleNav = (id: DashboardTab, path: string) => {
     setActiveTab(id);
     navigate(path);
@@ -52,7 +57,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpen, setI
           <button
             key={item.id}
             onClick={() => handleNav(item.id, item.path)}
-            className={`w-full flex items-center gap-4 p-3 rounded-xl transition-all duration-200 ease-in-out active:scale-[0.98] ${location.pathname === item.path
+            className={`w-full flex items-center gap-4 p-3 rounded-xl transition-all duration-200 ease-in-out active:scale-[0.98] ${location.pathname === item.path || (item.path === '/blogs' && location.pathname === '/blog')
               ? 'bg-indigo-600/15 text-indigo-400 border border-indigo-600/30 shadow-[0_0_15px_rgba(99,102,241,0.1)]'
               : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100 border border-transparent'
               }`}
@@ -63,6 +68,22 @@ const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpen, setI
             </span>
           </button>
         ))}
+
+        <div className={`pt-4 mt-4 border-t border-slate-800 transition-all duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+          <p className="text-[10px] uppercase font-bold text-slate-600 mb-2 px-3 whitespace-nowrap">Public Site</p>
+          <a
+            href="https://devinquire.com/blog"
+            onClick={openExternalBlog}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full flex items-center gap-4 p-3 rounded-xl text-slate-400 hover:bg-emerald-600/10 hover:text-emerald-400 border border-transparent hover:border-emerald-600/20 transition-all duration-200"
+            title="Open /blog on devinquire.com"
+          >
+            <i className="fas fa-globe text-lg w-6 shrink-0"></i>
+            <span className="font-medium whitespace-nowrap">devinquire.com/blog</span>
+            <i className="fas fa-external-link-alt text-[10px] opacity-50 ml-auto"></i>
+          </a>
+        </div>
       </nav>
 
       <div className="p-4 mt-auto">

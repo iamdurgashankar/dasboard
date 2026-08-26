@@ -10,6 +10,7 @@ export const api = {
 
         const defaultOptions: RequestInit = {
             ...options,
+            credentials: 'include',
             headers: {
                 'Content-Type': 'application/json',
                 'X-CSRF-Token': token || '',
@@ -92,14 +93,10 @@ export const api = {
 
     blog: {
         list: () => api.fetch('/blog/list.php'),
-        create: (data: any) => api.fetch('/blog/create.php', {
-            method: 'POST',
-            body: JSON.stringify(data)
-        }),
-        sync: (id: string) => api.fetch('/blog/sync.php', {
-            method: 'POST',
-            body: JSON.stringify({ id })
-        })
+        create: (data: any) => api.fetch('/blog/create.php', { method: 'POST', body: JSON.stringify(data) }),
+        update: (data: any) => api.fetch('/blog/update.php', { method: 'POST', body: JSON.stringify(data) }),
+        delete: (id: string | number) => api.fetch('/blog/delete.php', { method: 'POST', body: JSON.stringify({ id }) }),
+        sync: (id: string) => api.fetch('/blog/sync.php', { method: 'POST', body: JSON.stringify({ id }) })
     },
 
     users: {
