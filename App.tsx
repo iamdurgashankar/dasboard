@@ -1,21 +1,27 @@
-
 import React, { useState, useEffect } from 'react';
-import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import DashboardHome from './pages/DashboardHome';
+import ClientProjects from './pages/ClientProjects';
 import AIInquiry from './pages/AIInquiry';
-import Analytics from './pages/Analytics';
-import TaskManagement from './pages/TaskManagement';
 import BlogManagement from './pages/BlogManagement';
 import UserManagement from './pages/UserManagement';
 import Team from './pages/Team';
 import ProjectDetail from './pages/ProjectDetail';
 import ContactSubmissions from './pages/ContactSubmissions';
 import Login from './pages/Login';
+import { api } from './services/api';
 import { DashboardTab, UserRole, ROLE_PERMISSIONS, User } from './types';
 
-// Protected Route Component
+function normalizeUserRole(role?: string): UserRole {
+  const r = String(role || '').trim().toLowerCase();
+  if (r === 'admin') return 'Admin';
+  if (r === 'developer' || r === 'editor') return 'Developer';
+  if (r === 'viewer' || r === 'user') return 'Viewer';
+  return 'Admin';
+}
+
 interface ProtectedRouteProps {
   role: UserRole;
   allowedTabs: DashboardTab[];
@@ -24,7 +30,6 @@ interface ProtectedRouteProps {
 }
 
 const ProtectedRoute = ({
-  role,
   allowedTabs,
   tab,
   children
@@ -37,27 +42,63 @@ const ProtectedRoute = ({
 
 const AppContent = () => {
   const [activeTab, setActiveTab] = useState<DashboardTab>(DashboardTab.OVERVIEW);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-
-  // Simulated "Current User" with Auth State
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
 
-  // Auto-login logic
+  // Default to Apple Light Mode ('light') unless user explicitly toggled to 'dark'
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      const saved = localStorage.getItem('devinquire_theme');
+      return saved === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
+
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    root.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('devinquire_theme', theme);
+    } catch {
+      // ignore storage errors
+    }
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
+  };
+
   useEffect(() => {
     const savedUser = localStorage.getItem('devinquire_user');
     if (savedUser) {
-      setCurrentUser(JSON.parse(savedUser));
+      try {
+        const parsed = JSON.parse(savedUser);
+        if (parsed && parsed.email) {
+          setCurrentUser({ ...parsed, role: normalizeUserRole(parsed.role) });
+        }
+      } catch {
+        localStorage.removeItem('devinquire_user');
+      }
     }
   }, []);
 
   const handleLogin = (user: User) => {
-    setCurrentUser(user);
-    localStorage.setItem('devinquire_user', JSON.stringify(user));
+    const normalizedUser: User = { ...user, role: normalizeUserRole(user.role) };
+    setCurrentUser(normalizedUser);
+    localStorage.setItem('devinquire_user', JSON.stringify(normalizedUser));
   };
 
   const handleLogout = () => {
+    api.auth.logout().catch(() => {});
     setCurrentUser(null);
     localStorage.removeItem('devinquire_user');
+    localStorage.removeItem('di_csrf_token');
   };
 
   const handleRoleChange = (role: UserRole) => {
@@ -76,19 +117,14 @@ const AppContent = () => {
     }
   };
 
-  const handleUpdateOtherUserRole = (email: string, role: UserRole) => {
-    // This would typically call an API. For now, just a toast.
-    console.log(`AI AGENT: Updated ${email} to ${role}`);
-  };
-
   if (!currentUser) {
-    return <Login onLogin={handleLogin} />;
+    return <Login onLogin={handleLogin} theme={theme} toggleTheme={toggleTheme} />;
   }
 
-  const allowedTabs = ROLE_PERMISSIONS[currentUser.role];
+  const allowedTabs = ROLE_PERMISSIONS[currentUser.role] || ROLE_PERMISSIONS.Admin;
 
   return (
-    <div className="flex h-screen w-full bg-slate-950 overflow-hidden text-slate-100">
+    <div className="flex h-screen w-full bg-transparent overflow-hidden text-[var(--apple-text-primary)]">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -105,24 +141,23 @@ const AppContent = () => {
           setCurrentUserRole={handleRoleChange}
           onLogout={handleLogout}
           onUpdateUser={handleUpdateUser}
+          theme={theme}
+          toggleTheme={toggleTheme}
         />
 
-        <div className={`flex-1 flex flex-col ${activeTab === DashboardTab.INQUIRE ? 'overflow-hidden h-full p-0 md:p-4' : 'overflow-y-auto p-4 md:p-8 space-y-6'}`}>
+        <div className={`flex-1 flex flex-col custom-scrollbar ${activeTab === DashboardTab.INQUIRE ? 'overflow-hidden h-full p-0 md:p-5' : 'overflow-y-auto p-5 md:p-8 space-y-6'}`}>
           <Routes>
             <Route path="/" element={<DashboardHome currentUser={currentUser} />} />
-            <Route path="/project/:projectId" element={<ProjectDetail />} />
+            <Route path="/projects" element={
+              <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.PROJECTS}>
+                <ClientProjects currentUser={currentUser} />
+              </ProtectedRoute>
+            } />
+            <Route path="/project/:projectId" element={<ProjectDetail currentUser={currentUser} />} />
 
             <Route path="/inquire" element={
               <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.INQUIRE}>
                 <AIInquiry />
-              </ProtectedRoute>
-            } />
-
-            <Route path="/analytics" element={<Analytics />} />
-
-            <Route path="/tasks" element={
-              <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.TASKS}>
-                <TaskManagement />
               </ProtectedRoute>
             } />
 
@@ -158,7 +193,6 @@ const AppContent = () => {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>
-
       </main>
     </div>
   );

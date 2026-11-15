@@ -9,15 +9,31 @@ export default defineConfig(({ mode }) => {
     server: {
       port: 3000,
       host: '0.0.0.0',
-      proxy: {
-        '/api': {
-          target: 'http://localhost:8001',
-          changeOrigin: true,
-          secure: false
+    },
+    plugins: [
+      react(),
+      {
+        name: 'devinquire-embedded-api',
+        configureServer(server) {
+          let apiAppPromise: Promise<any> | null = null;
+          server.middlewares.use(async (req, res, next) => {
+            if (!req.url || (!req.url.startsWith('/api') && !req.url.startsWith('/health'))) {
+              return next();
+            }
+            try {
+              if (!apiAppPromise) {
+                apiAppPromise = import('./server/server.js');
+              }
+              const mod = await apiAppPromise;
+              await mod.ready;
+              return mod.app(req, res, next);
+            } catch {
+              return next();
+            }
+          });
         }
       }
-    },
-    plugins: [react()],
+    ],
     define: {
       'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)

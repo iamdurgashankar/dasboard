@@ -1,6 +1,6 @@
 /**
  * Authentication Router
- * Handles login, identity checks, and logout.
+ * Handles login, registration/access requests, identity checks, and logout.
  */
 import express from 'express';
 import bcrypt from 'bcryptjs';
@@ -8,50 +8,91 @@ import db from '../db.js';
 import { 
     sendJsonResponse, 
     generateCsrfToken, 
-    requireAuth 
+    requireAuth,
+    normalizeRole
 } from '../utils.js';
 
 const router = express.Router();
 
 // Helper to support both clean and .php endpoints
 const loginPaths = ['/login', '/login.php'];
+const registerPaths = ['/register', '/register.php'];
 const mePaths = ['/me', '/me.php'];
 const logoutPaths = ['/logout', '/logout.php'];
 
 // Login API
 router.post(loginPaths, async (req, res) => {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
     if (!email || !password) {
-        return sendJsonResponse(res, "error", "Email and password required.");
+        return sendJsonResponse(res, "error", "Email and password required.", null, 400);
     }
 
+    const normalizedEmail = String(email).trim().toLowerCase();
+
     try {
-        const query = 'SELECT id, name, email, password, role, status, avatar FROM users WHERE email = $1 LIMIT 1';
-        const result = await db.query(query, [email.trim()]);
-        const user = result.rows[0];
+        let result = await db.query(
+            'SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+            [normalizedEmail]
+        );
+        let user = result.rows && result.rows[0];
+
+        // If admin user is logging in on an unseeded DB, trigger bootstrap once and re-query
+        if (!user && normalizedEmail === 'admin@devinquire.com') {
+            await db.bootstrap();
+            result = await db.query(
+                'SELECT * FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+                [normalizedEmail]
+            );
+            user = result.rows && result.rows[0];
+        }
 
         if (user) {
-            const isMatch = await bcrypt.compare(password, user.password);
+            const rawHash = user.password || user.password_hash || '';
+            // Support PHP $2y$ bcrypt hashes in Node bcryptjs
+            const compatibleHash = String(rawHash).replace(/^\$2y\$/, '$2a$');
+            const isMatch = compatibleHash
+                ? await bcrypt.compare(password, compatibleHash)
+                : false;
+
             if (isMatch) {
-                if (user.status !== 'active') {
-                    return sendJsonResponse(res, "error", "Account pending approval.");
+                const status = user.status || (user.is_active === 0 ? 'pending' : 'active');
+                if (status !== 'active') {
+                    return sendJsonResponse(res, "error", "Account pending approval.", null, 403);
                 }
+
+                const cleanUser = {
+                    id: String(user.id),
+                    name: user.name || 'System Alpha',
+                    email: user.email,
+                    role: normalizeRole(user.role),
+                    status: 'active',
+                    avatar: user.avatar || undefined,
+                    joinDate: user.join_date
+                        ? String(user.join_date).split('T')[0].split(' ')[0]
+                        : user.created_at
+                            ? String(user.created_at).split('T')[0].split(' ')[0]
+                            : new Date().toISOString().split('T')[0]
+                };
 
                 // Set session
                 req.session.user_id = user.id;
-                req.session.user_name = user.name;
-                req.session.user_role = user.role;
+                req.session.user_name = cleanUser.name;
+                req.session.user_role = cleanUser.role;
 
-                // Remove password hash from response
-                delete user.password;
+                // Generate signed CSRF/session token
+                const csrfToken = generateCsrfToken(req, cleanUser);
 
-                // Generate CSRF token
-                const csrfToken = generateCsrfToken(req);
-
-                return sendJsonResponse(res, "success", "Authentication successful. Welcome to the Neural Hub.", {
-                    user,
-                    csrf_token: csrfToken
+                return req.session.save(() => {
+                    return sendJsonResponse(
+                        res,
+                        "success",
+                        "Authentication successful. Welcome to the Neural Hub.",
+                        {
+                            user: cleanUser,
+                            csrf_token: csrfToken
+                        }
+                    );
                 });
             }
         }
@@ -63,20 +104,76 @@ router.post(loginPaths, async (req, res) => {
     }
 });
 
+// Registration / Access Request API
+router.post(registerPaths, async (req, res) => {
+    const { name, email, password } = req.body || {};
+
+    if (!name || !email || !password) {
+        return sendJsonResponse(res, "error", "Name, email, and password required.", null, 400);
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+
+    try {
+        const existing = await db.query(
+            'SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+            [normalizedEmail]
+        );
+        if (existing.rows && existing.rows.length > 0) {
+            return sendJsonResponse(res, "error", "Identity already registered in ledger.", null, 409);
+        }
+
+        const hashedPass = await bcrypt.hash(password, 10);
+        const insertRes = await db.query(
+            `INSERT INTO users (email, password, name, role, status)
+             VALUES ($1, $2, $3, 'Developer'::user_role, 'pending'::user_status)
+             RETURNING id`,
+            [normalizedEmail, hashedPass, String(name).trim()]
+        );
+        const userId = insertRes.rows?.[0]?.id || `req-${Date.now()}`;
+
+        return sendJsonResponse(res, "success", "Access request queued for administrative override.", {
+            user: {
+                id: String(userId),
+                name: String(name).trim(),
+                email: normalizedEmail,
+                role: 'Developer',
+                status: 'pending',
+                joinDate: new Date().toISOString().split('T')[0]
+            }
+        });
+    } catch (err) {
+        console.error("Register API Error:", err);
+        return sendJsonResponse(res, "error", `Registration Error: ${err.message}`, null, 500);
+    }
+});
+
 // Get Current User Identity API
 router.get(mePaths, requireAuth, async (req, res) => {
     const userId = req.session.user_id;
 
     try {
-        const query = 'SELECT id, name, email, role, status, avatar FROM users WHERE id = $1 LIMIT 1';
+        const query = 'SELECT * FROM users WHERE id = $1 LIMIT 1';
         const result = await db.query(query, [userId]);
         const user = result.rows[0];
 
         if (user) {
-            return sendJsonResponse(res, "success", "Identity retrieved.", user);
+            const cleanUser = {
+                id: String(user.id),
+                name: user.name || req.session.user_name || 'System Alpha',
+                email: user.email,
+                role: normalizeRole(user.role),
+                status: user.status || 'active',
+                avatar: user.avatar || undefined,
+                joinDate: user.join_date
+                    ? String(user.join_date).split('T')[0].split(' ')[0]
+                    : user.created_at
+                        ? String(user.created_at).split('T')[0].split(' ')[0]
+                        : new Date().toISOString().split('T')[0]
+            };
+            return sendJsonResponse(res, "success", "Identity retrieved.", cleanUser);
         } else {
-            // Clean up session if user not found in DB
-            req.session.destroy();
+            req.session.destroy(() => {});
             return sendJsonResponse(res, "error", "Identity purged or not found.", null, 401);
         }
     } catch (err) {
@@ -87,12 +184,16 @@ router.get(mePaths, requireAuth, async (req, res) => {
 
 // Logout API
 router.post(logoutPaths, (req, res) => {
+    if (!req.session) {
+        res.clearCookie('connect.sid');
+        return sendJsonResponse(res, "success", "Session terminated. Neural link severed.");
+    }
     req.session.destroy((err) => {
         if (err) {
             console.error("Logout Error:", err);
             return sendJsonResponse(res, "error", "Failed to terminate session.", null, 500);
         }
-        res.clearCookie('connect.sid'); // Clear Express session cookie
+        res.clearCookie('connect.sid');
         return sendJsonResponse(res, "success", "Session terminated. Neural link severed.");
     });
 });

@@ -20,9 +20,14 @@ const updatePaths = ['/update', '/update.php'];
 // List Projects API
 router.get(listPaths, requireAuth, async (req, res) => {
     try {
-        const query = 'SELECT * FROM projects ORDER BY last_update DESC';
+        const query = 'SELECT * FROM projects ORDER BY created_at DESC';
         const result = await db.query(query);
-        return sendJsonResponse(res, "success", "Projects retrieved.", result.rows);
+        const rows = (result.rows || []).map(p => ({
+            ...p,
+            id: String(p.id),
+            lastUpdate: p.lastUpdate || (p.last_update ? new Date(p.last_update).toLocaleDateString() : 'Active')
+        }));
+        return sendJsonResponse(res, "success", "Projects retrieved.", rows);
     } catch (err) {
         console.error("Projects List API Error:", err);
         return sendJsonResponse(res, "error", "Failed to retrieve projects.", null, 500);
@@ -100,8 +105,9 @@ router.get(detailPaths, requireAuth, async (req, res) => {
 
 // Create Project API
 router.post(createPaths, requireMutatingAuth, async (req, res) => {
-    const { name, description, language } = req.body;
+    const { name, description, language, clientName, assignedDeveloper, assignedViewer, dueDate, progress } = req.body;
     const lang = language || 'TypeScript';
+    const initialProgress = progress !== undefined ? parseInt(progress, 10) : 10;
 
     if (!name) {
         return sendJsonResponse(res, "error", "Project name required.");
@@ -110,13 +116,21 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
     try {
         const query = `
             INSERT INTO projects (name, description, language, status, health, progress) 
-            VALUES ($1, $2, $3, 'active', 100, 0) 
+            VALUES ($1, $2, $3, $4, $5, $6) 
             RETURNING id
         `;
-        const result = await db.query(query, [name, description || null, lang]);
+        const result = await db.query(query, [
+            name,
+            description || null,
+            lang,
+            'active',
+            100,
+            initialProgress,
+            { clientName, assignedDeveloper, assignedViewer, dueDate }
+        ]);
         const projectId = result.rows[0].id;
 
-        return sendJsonResponse(res, "success", "Architectural payload initialized.", { id: projectId });
+        return sendJsonResponse(res, "success", "Client project initialized.", { id: projectId });
     } catch (err) {
         console.error("Project Create API Error:", err);
         return sendJsonResponse(res, "error", "Failed to initialize project.", null, 500);
@@ -125,13 +139,16 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
 
 // Update Project API
 router.post(updatePaths, requireMutatingAuth, async (req, res) => {
-    const { id, name, description, status, progress, health } = req.body;
+    const { id, name, description, status, progress, health, clientName, assignedDeveloper, assignedViewer, dueDate, newUpdate } = req.body;
 
     if (!id) {
         return sendJsonResponse(res, "error", "Project ID required for update.");
     }
 
     try {
+        const existingRes = await db.query('SELECT * FROM projects WHERE id = $1 LIMIT 1', [id]);
+        const existing = existingRes.rows?.[0] || {};
+
         const fields = [];
         const params = [];
         let paramCount = 1;
@@ -156,6 +173,40 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
             fields.push(`health = $${paramCount++}`);
             params.push(parseInt(health, 10));
         }
+        if (clientName !== undefined) {
+            fields.push(`clientName = $${paramCount++}`);
+            params.push(clientName);
+        }
+        if (assignedDeveloper !== undefined) {
+            fields.push(`assignedDeveloper = $${paramCount++}`);
+            params.push(assignedDeveloper);
+        }
+        if (assignedViewer !== undefined) {
+            fields.push(`assignedViewer = $${paramCount++}`);
+            params.push(assignedViewer);
+        }
+        if (dueDate !== undefined) {
+            fields.push(`dueDate = $${paramCount++}`);
+            params.push(dueDate);
+        }
+        if (newUpdate && newUpdate.title) {
+            const currentUpdates = Array.isArray(existing.updates) ? existing.updates : [];
+            const nextProg = progress !== undefined ? parseInt(progress, 10) : (existing.progress || 0);
+            const todayStr = new Date().toISOString().split('T')[0];
+            const updateEntry = {
+                id: `upd-${Date.now()}`,
+                title: newUpdate.title,
+                summary: newUpdate.summary || '',
+                author: newUpdate.author || 'Developer',
+                authorRole: newUpdate.authorRole || 'Developer',
+                date: todayStr,
+                timestamp: 'Just now',
+                progress: nextProg,
+                progressAfter: nextProg
+            };
+            fields.push(`updates = $${paramCount++}`);
+            params.push([updateEntry, ...currentUpdates]);
+        }
 
         if (fields.length === 0) {
             return sendJsonResponse(res, "error", "No update parameters provided.");
@@ -165,7 +216,7 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
         const query = `UPDATE projects SET ${fields.join(', ')} WHERE id = $${paramCount}`;
         await db.query(query, params);
 
-        return sendJsonResponse(res, "success", "Architectural state updated.");
+        return sendJsonResponse(res, "success", "Project progress updated.");
     } catch (err) {
         console.error("Project Update API Error:", err);
         return sendJsonResponse(res, "error", "Failed to update project state.", null, 500);

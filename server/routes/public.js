@@ -4,12 +4,91 @@
  */
 import express from 'express';
 import db from '../db.js';
-import { sendJsonResponse } from '../utils.js';
+import { sendJsonResponse, createNotification } from '../utils.js';
 
 const router = express.Router();
 
 const blogListPaths = ['/blog_list', '/blog_list.php'];
 const blogDetailPaths = ['/blog_detail', '/blog_detail.php'];
+const contactIntakePaths = ['/contact_intake', '/contact_intake.php'];
+
+// Public Contact Intake API (Receives submissions from devinquire.com main site)
+router.post(contactIntakePaths, async (req, res) => {
+    const config = db.getSettings('contacts_config');
+    if (config.webhookIntakeEnabled === false) {
+        return sendJsonResponse(res, "error", "Public contact intake is currently paused by Administrator.", null, 503);
+    }
+
+    const { name, email, subject, message, priority, company, phone, service, timeline } = req.body || {};
+    if (!name || !email || !message) {
+        return sendJsonResponse(res, "error", "Name, email, and message are required.", null, 400);
+    }
+
+    try {
+        const resolvedPriority = priority || config.defaultPriority || 'Medium';
+        const resolvedSubject = subject || (service ? `Service Request: ${service}` : 'Website Contact Submission');
+        const cleanEmail = String(email).trim().toLowerCase();
+        const cleanSubject = String(resolvedSubject).trim();
+        const cleanMessage = String(message).trim();
+
+        // Deduplicate against recent identical submission within the last 30 seconds
+        const existingCheck = await db.query('SELECT id, email, subject, message FROM contacts ORDER BY created_at DESC');
+        const duplicateRow = (existingCheck.rows || []).slice(0, 5).find(
+            (r) =>
+                String(r.email || '').toLowerCase() === cleanEmail &&
+                String(r.subject || '').trim() === cleanSubject &&
+                String(r.message || '').trim() === cleanMessage
+        );
+        if (duplicateRow) {
+            return sendJsonResponse(res, "success", "Inquiry already recorded in dashboard ledger.", {
+                id: duplicateRow.id
+            });
+        }
+
+        const insertRes = await db.query(
+            'INSERT INTO contacts (name, email, subject, message, priority) VALUES ($1, $2, $3, $4, $5::contact_priority) RETURNING id',
+            [
+                String(name).trim(),
+                cleanEmail,
+                cleanSubject,
+                cleanMessage,
+                resolvedPriority,
+                {
+                    company: company || '',
+                    phone: phone || '',
+                    service: service || '',
+                    timeline: timeline || '',
+                    status: 'new'
+                }
+            ]
+        );
+
+        const newId = insertRes.rows?.[0]?.id;
+        if (newId && (company || phone || service || timeline)) {
+            await db
+                .query(
+                    'UPDATE contacts SET company = $1, phone = $2, service = $3, timeline = $4 WHERE id = $5',
+                    [company || '', phone || '', service || '', timeline || '', newId]
+                )
+                .catch(() => {});
+        }
+
+        await createNotification(
+            null,
+            'info',
+            'Website Inquiry Received',
+            `${name} (${email}) — ${resolvedSubject}`,
+            '/contacts'
+        ).catch(() => {});
+
+        return sendJsonResponse(res, "success", "Inquiry recorded in dashboard ledger.", {
+            id: newId
+        });
+    } catch (err) {
+        console.error("Public Contact Intake Error:", err);
+        return sendJsonResponse(res, "error", "Failed to record inquiry.", null, 500);
+    }
+});
 
 // Public List Blog Posts API
 router.get(blogListPaths, async (req, res) => {

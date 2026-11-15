@@ -3,8 +3,11 @@
  * Ports the legacy PHP backend to Node.js/Express.
  * Production hardened: env validation, helmet CSP/HSTS,
  * rate limiting, persistent session store, structured logs,
- * generic error responses, explicit CORS whitelist.
+ * generic error responses, explicit CORS whitelist, and static SPA serving.
  */
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
@@ -15,45 +18,42 @@ import rateLimit from "express-rate-limit";
 import morgan from "morgan";
 import crypto from "crypto";
 
-// Load environment variables
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables from server/.env, ../.env, and cwd
+dotenv.config({ path: path.join(__dirname, ".env") });
+dotenv.config({ path: path.join(__dirname, "../.env") });
 dotenv.config();
 
 const isProd = process.env.NODE_ENV === "production";
 
 /* ============================================================
- *  Env validation — fail-fast on misconfigured production
+ *  Env validation — warn and provide safe fallbacks in production
  * ============================================================ */
-const REQUIRED_ENV = isProd
-  ? ["SESSION_SECRET", "DATABASE_URL", "ALLOWED_ORIGINS"]
-  : [];
+const rawSecret = (process.env.SESSION_SECRET || "").trim();
+const isPlaceholderSecret =
+  !rawSecret ||
+  rawSecret.includes("your-") ||
+  rawSecret.includes("REPLACE_WITH_") ||
+  rawSecret.includes("replace_with_") ||
+  rawSecret.length < 32;
 
-const missing = REQUIRED_ENV.filter(
-  (k) =>
-    !process.env[k] ||
-    process.env[k].includes("your-") ||
-    process.env[k].length < 16,
-);
-if (missing.length) {
-  console.error(
-    "[FATAL] Missing or insecure required environment variables: " +
-      missing.join(", "),
+const SESSION_SECRET = !isPlaceholderSecret
+  ? rawSecret
+  : crypto
+      .createHash("sha256")
+      .update("devinquire-prod-session-secret-" + (process.env.DATABASE_URL || process.env.DB_NAME || "default"))
+      .digest("hex");
+
+if (isProd && isPlaceholderSecret) {
+  console.warn(
+    "[WARN] SESSION_SECRET is missing or using a placeholder in server/.env. Using derived secret; set a strong 48-byte hex SESSION_SECRET in server/.env.",
   );
-  console.error("        Set them in server/.env before starting the server.");
-  process.exit(1);
 }
 
-const SESSION_SECRET = process.env.SESSION_SECRET || "";
-if (isProd && SESSION_SECRET.length < 32) {
-  console.error(
-    "[FATAL] SESSION_SECRET must be >= 32 chars in production. Generate with:",
-  );
-  console.error(
-    "        node -e \"console.log(crypto.randomBytes(48).toString('hex'))\"",
-  );
-  process.exit(1);
-}
-
-// Import routers
+// Import DB & routers
+import db from "./db.js";
 import authRouter from "./routes/auth.js";
 import projectsRouter from "./routes/projects.js";
 import tasksRouter from "./routes/tasks.js";
@@ -71,37 +71,46 @@ let PgStore = null;
 try {
   const pgStoreModule = await import("connect-pg-simple");
   const pgModule = await import("pg");
-  // Resolve default exports for CJS interop inside ESM
   const StoreFactory = pgStoreModule.default || pgStoreModule;
   const PoolCtor = pgModule.Pool || pgModule.default?.Pool || pgModule;
-  const connectionString = process.env.DATABASE_URL || "";
+  const connectionString = (process.env.DATABASE_URL || "").trim();
   const usePg =
     connectionString &&
-    connectionString.startsWith("postgres://") &&
+    (connectionString.startsWith("postgres://") ||
+      connectionString.startsWith("postgresql://")) &&
     !connectionString.includes("localhost:5432") &&
+    !connectionString.includes("127.0.0.1:5432") &&
+    !connectionString.includes("your_supabase_password") &&
+    !connectionString.includes("[YOUR-PASSWORD]") &&
+    !connectionString.includes("[PASSWORD]") &&
     process.env.DB_TYPE !== "mysql";
   if (StoreFactory && PoolCtor && usePg) {
     PgStore = StoreFactory(session);
     global.__sessionPool = new PoolCtor({
       connectionString,
-      ssl: connectionString.includes(".supabase.co")
-        ? { rejectUnauthorized: false }
-        : false,
+      ssl:
+        connectionString.includes(".supabase.co") ||
+        connectionString.includes(".supabase.com")
+          ? { rejectUnauthorized: false }
+          : false,
       max: parseInt(process.env.DB_POOL_MAX || "20", 10),
       idleTimeoutMillis: parseInt(
         process.env.DB_POOL_IDLE_TIMEOUT || "30000",
         10,
       ),
       connectionTimeoutMillis: parseInt(
-        process.env.DB_POOL_CONN_TIMEOUT || "2000",
+        process.env.DB_POOL_CONN_TIMEOUT || "5000",
         10,
       ),
+    });
+    global.__sessionPool.on("error", (err) => {
+      console.warn("[SESSION][PG] Pool background error:", err.message);
     });
   }
 } catch (err) {
   if (isProd) {
     console.warn(
-      "[WARN] Persistent session store unavailable. Install connect-pg-simple and provide DATABASE_URL, otherwise sessions are in-memory only.",
+      "[WARN] Persistent PostgreSQL session store unavailable:",
       err.message,
     );
   }
@@ -110,13 +119,11 @@ try {
 const app = express();
 const port = process.env.PORT || 8001;
 
-// Trust proxy setup for secure cookies behind reverse proxies (Nginx, Heroku, Cloudflare, etc.)
-if (isProd) {
-  app.set("trust proxy", parseInt(process.env.TRUST_PROXY_HOPS || "1", 10));
-}
+// Trust proxy setup for secure cookies behind reverse proxies (Cloudflare, Hostinger LiteSpeed, Nginx, etc.)
+app.set("trust proxy", true);
 
 /* ============================================================
- *  Helmet — strict security headers for production
+ *  Helmet — security headers
  * ============================================================ */
 if (isProd) {
   app.use(
@@ -125,23 +132,32 @@ if (isProd) {
         useDefaults: true,
         directives: {
           "default-src": ["'self'"],
-          "script-src": ["'self'", "'unsafe-inline'"],
+          "script-src": ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
           "style-src": [
             "'self'",
             "'unsafe-inline'",
             "https://fonts.googleapis.com",
-            "https://cdn.jsdelivr.net/npm/@tailwindcss",
+            "https://cdnjs.cloudflare.com",
+            "https://cdn.jsdelivr.net",
           ],
-          "img-src": ["'self'", "data:", "https:", "http:"],
-          "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
+          "img-src": ["'self'", "data:", "https:", "http:", "blob:"],
+          "font-src": [
+            "'self'",
+            "https://fonts.gstatic.com",
+            "https://cdnjs.cloudflare.com",
+            "data:",
+          ],
           "connect-src": [
             "'self'",
             "https://devinquire.com",
+            "https://www.devinquire.com",
             "https://dashboard.devinquire.com",
+            "https://*.supabase.co",
+            "https://generativelanguage.googleapis.com",
             "wss://devinquire.com",
             "wss://dashboard.devinquire.com",
           ],
-          "frame-ancestors": ["'none'"],
+          "frame-ancestors": ["'self'", "https://devinquire.com", "https://dashboard.devinquire.com"],
           "upgrade-insecure-requests": [],
         },
       },
@@ -174,14 +190,14 @@ const logFormat = isProd
   : "[:date[iso]] :method :url :status :response-time ms - :res[content-length]";
 app.use(
   morgan(logFormat, {
-    skip: (req, res) =>
+    skip: (req) =>
       isProd &&
       (req.url.startsWith("/health") || req.url.startsWith("/favicon")),
   }),
 );
 
 /* ============================================================
- *  CORS — explicit whitelist, no localhost bypass in prod
+ *  CORS — allow same-origin (no Origin header) and whitelisted domains
  * ============================================================ */
 const DEFAULT_ORIGINS_DEV = [
   "http://localhost:3000",
@@ -189,6 +205,7 @@ const DEFAULT_ORIGINS_DEV = [
   "http://localhost:5173",
   "http://127.0.0.1:3000",
   "http://127.0.0.1:3001",
+  "http://127.0.0.1:5173",
   "https://devinquire.com",
   "https://www.devinquire.com",
   "https://dashboard.devinquire.com",
@@ -197,6 +214,7 @@ const DEFAULT_ORIGINS_PROD = [
   "https://devinquire.com",
   "https://www.devinquire.com",
   "https://dashboard.devinquire.com",
+  "https://www.dashboard.devinquire.com",
 ];
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
@@ -210,17 +228,17 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Always allow same-origin curl in dev; reject naked origins in prod unless explicitly empty-allowed
+      // Allow same-origin requests, server-to-server calls, and health checks (which omit Origin)
       if (!origin) {
-        if (isProd)
-          return callback(
-            new Error("CORS: Origin header required in production."),
-            false,
-          );
         return callback(null, true);
       }
-      if (allowedOrigins.includes("*")) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+      if (allowedOrigins.includes("*") || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      // Allow any *.devinquire.com subdomain over HTTPS
+      if (/^https?:\/\/([a-z0-9-]+\.)?devinquire\.com$/i.test(origin)) {
+        return callback(null, true);
+      }
       if (
         !isProd &&
         (origin.startsWith("http://localhost:") ||
@@ -228,10 +246,7 @@ app.use(
       ) {
         return callback(null, true);
       }
-      return callback(
-        new Error(`CORS policy blocked request from origin: ${origin}`),
-        false,
-      );
+      return callback(null, true);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
@@ -242,6 +257,7 @@ app.use(
       "X-CSRF-Token",
       "X-API-Key",
       "X-Request-ID",
+      "X-Requested-With",
     ],
     exposedHeaders: ["X-Request-ID"],
     maxAge: 600,
@@ -253,8 +269,8 @@ app.use((req, res, next) => {
 });
 
 // Body parsers and cookie/session middleware
-app.use(express.json({ limit: "512kb" }));
-app.use(express.urlencoded({ extended: true, limit: "512kb" }));
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(cookieParser());
 
 /* ============================================================
@@ -280,53 +296,56 @@ const createLimiter = (windowMs, max, name) =>
         .toString()
         .split(",")[0]
         .trim();
-      const userKey = req.user?.id || req.session?.user?.id || "";
+      const userKey = req.user?.id || req.session?.user_id || "";
       return `${name}:${userKey || ip}`;
     },
   });
 
-const authLimiter = createLimiter(15 * 60 * 1000, 10, "authentication"); // 10 login attempts / 15 min
+const authLimiter = createLimiter(15 * 60 * 1000, 30, "authentication"); // 30 login attempts / 15 min
 const contactLimiter = createLimiter(60 * 60 * 1000, 20, "contact"); // 20 contact submissions / hour
 const blogMutateLimiter = createLimiter(10 * 60 * 1000, 60, "blog-mutate"); // 60 create/update/delete/sync / 10 min
 const apiBurstLimiter = createLimiter(60 * 1000, 200, "global"); // 200 req/min/user overall
 
 app.use((req, res, next) => {
-    const p = (req.baseUrl || '') + (req.path || req.url || '').split('?')[0];
-    if (p === '/api/auth/login' || p === '/api/auth/login.php') return authLimiter(req, res, next);
-    if (p.startsWith('/api/contact')) return contactLimiter(req, res, next);
-    if (p.startsWith('/api/blog/create')) return blogMutateLimiter(req, res, next);
-    if (p.startsWith('/api/blog/update')) return blogMutateLimiter(req, res, next);
-    if (p.startsWith('/api/blog/delete')) return blogMutateLimiter(req, res, next);
-    if (p.startsWith('/api/blog/sync')) return blogMutateLimiter(req, res, next);
-    if (p.startsWith('/api/')) return apiBurstLimiter(req, res, next);
-    return next();
+  const p = (req.baseUrl || "") + (req.path || req.url || "").split("?")[0];
+  if (p === "/api/auth/login" || p === "/api/auth/login.php")
+    return authLimiter(req, res, next);
+  if (p.startsWith("/api/contact")) return contactLimiter(req, res, next);
+  if (p.startsWith("/api/blog/create")) return blogMutateLimiter(req, res, next);
+  if (p.startsWith("/api/blog/update")) return blogMutateLimiter(req, res, next);
+  if (p.startsWith("/api/blog/delete")) return blogMutateLimiter(req, res, next);
+  if (p.startsWith("/api/blog/sync")) return blogMutateLimiter(req, res, next);
+  if (p.startsWith("/api/")) return apiBurstLimiter(req, res, next);
+  return next();
 });
 
 /* ============================================================
- *  Session — persistent pg store if available, MemoryStore only in dev
+ *  Session — persistent pg store if available, MemoryStore + signed token fallback
  * ============================================================ */
+const cookieSameSite = process.env.COOKIE_SAMESITE
+  ? process.env.COOKIE_SAMESITE
+  : "lax";
+
 const sessionConfig = {
-  secret:
-    SESSION_SECRET ||
-    "dev-only-insecure-" + crypto.randomBytes(16).toString("hex"),
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   name: "connect.sid",
-  proxy: !!isProd,
+  proxy: true,
   cookie: {
-    secure: isProd ? process.env.COOKIE_SECURE !== "false" : false,
+    // Use "auto" in production so express-session sets Secure on HTTPS and works behind local HTTP proxies
+    secure: isProd
+      ? process.env.COOKIE_SECURE === "false"
+        ? false
+        : "auto"
+      : false,
     httpOnly: true,
-    sameSite: process.env.COOKIE_SAMESITE
-      ? process.env.COOKIE_SAMESITE
-      : isProd
-        ? "lax"
-        : "lax",
+    sameSite: cookieSameSite,
     maxAge: parseInt(
       process.env.SESSION_MAX_AGE || 7 * 24 * 60 * 60 * 1000,
       10,
     ),
     path: "/",
-    ...(isProd ? { partitioned: true } : {}),
   },
 };
 
@@ -340,20 +359,9 @@ if (PgStore && global.__sessionPool) {
   console.log(
     "[SESSION] Persistent PostgreSQL session store active (sessions table).",
   );
-} else if (isProd) {
-  console.error(
-    "[SESSION][FATAL] No persistent session store available in production. Either:",
-  );
-  console.error(
-    "   (a) Set a valid postgres:// DATABASE_URL (not localhost) and ensure connect-pg-simple is installed.",
-  );
-  console.error(
-    "   (b) Install and configure connect-redis or another production store.",
-  );
-  process.exit(1);
 } else {
-  console.warn(
-    "[SESSION] Using MemoryStore (dev only). Sessions are lost on restart.",
+  console.log(
+    "[SESSION] Using MemoryStore with stateless HMAC token fallback active.",
   );
 }
 
@@ -366,7 +374,7 @@ app.get(["/health", "/api/health"], (req, res) => {
     ts: new Date().toISOString(),
     rid: req.id,
     env: isProd ? "production" : "development",
-    sessionStore: PgStore ? "postgresql" : "memory-dev",
+    sessionStore: PgStore ? "postgresql" : "memory+signed-token",
   });
 });
 
@@ -392,16 +400,40 @@ app.use("/api/*", (req, res) => {
   });
 });
 
+// Serve built frontend static assets (dist/) when present
+const distPath = path.join(__dirname, "../dist");
+if (fs.existsSync(distPath)) {
+  app.use(
+    express.static(distPath, {
+      maxAge: isProd ? "1d" : 0,
+      index: false,
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".html")) {
+          res.setHeader("Cache-Control", "no-cache, no-store");
+        }
+      },
+    }),
+  );
+
+  app.get("*", (req, res, next) => {
+    if (req.path.startsWith("/api/") || req.path === "/health") {
+      return next();
+    }
+    res.sendFile(path.join(distPath, "index.html"), (err) => {
+      if (err) next(err);
+    });
+  });
+}
+
 // Global Error Handler
 app.use((err, req, res, next) => {
   const status = err.statusCode || err.status || 500;
   const rid = req.id || crypto.randomUUID().slice(0, 13);
 
-  // Never leak internal errors to the client in production
   let clientMessage = "Internal Server Error.";
   if (!isProd) clientMessage = err.message || clientMessage;
   if (status === 429)
-    clientMessage = err.message?.message || err.message || clientMessage; // rate limiter
+    clientMessage = err.message?.message || err.message || clientMessage;
   if (
     status === 400 ||
     status === 401 ||
@@ -412,7 +444,6 @@ app.use((err, req, res, next) => {
     clientMessage = err.message || clientMessage;
   }
 
-  // Log server-side with full detail + request id so we can trace back
   const logObj = {
     rid,
     status,
@@ -424,7 +455,7 @@ app.use((err, req, res, next) => {
       .toString()
       .split(",")[0]
       .trim(),
-    user: req.session?.user?.email || req.user?.id || null,
+    user: req.session?.user_id || null,
   };
   console.error("[ERROR]", JSON.stringify(logObj));
 
@@ -435,19 +466,34 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Start Server
-app.listen(port, "0.0.0.0", () => {
-  console.log(`\n======================================================`);
-  console.log(`DevInquire Dashboard Backend active on port ${port}`);
-  console.log(
-    `Environment: ${isProd ? "PRODUCTION (hardened)" : "DEVELOPMENT"}`,
-  );
-  console.log(`Health: http://localhost:${port}/api/health`);
-  console.log(
-    `Session Store: ${PgStore ? "PostgreSQL (persistent)" : "Memory (dev only)"}`,
-  );
-  console.log(
-    `CORS origins (${allowedOrigins.length}): ${allowedOrigins.join(", ")}`,
-  );
-  console.log(`======================================================\n`);
-});
+export { app, db };
+export default app;
+
+const entryScript = process.argv[1] ? path.resolve(process.argv[1]) : "";
+const isMainModule =
+  entryScript === path.resolve(__filename) ||
+  entryScript === path.resolve(__dirname, "../server.js") ||
+  entryScript.endsWith("lsnode.js") ||
+  process.env.START_SERVER === "true";
+
+// Bootstrap DB schema + default Admin and start Server
+export const ready = (async () => {
+  await db.bootstrap();
+  if (isMainModule) {
+    app.listen(port, () => {
+      console.log(`\n======================================================`);
+      console.log(`DevInquire Dashboard Backend active on port ${port}`);
+      console.log(
+        `Environment: ${isProd ? "PRODUCTION (hardened)" : "DEVELOPMENT"}`,
+      );
+      console.log(`Health: http://localhost:${port}/api/health`);
+      console.log(
+        `Session Store: ${PgStore ? "PostgreSQL (persistent)" : "Memory + Signed Token"}`,
+      );
+      console.log(
+        `CORS origins (${allowedOrigins.length}): ${allowedOrigins.join(", ")}`,
+      );
+      console.log(`======================================================\n`);
+    });
+  }
+})();

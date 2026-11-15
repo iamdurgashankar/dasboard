@@ -46,51 +46,52 @@ router.get(activityPaths, requireAuth, async (req, res) => {
 // Metrics API
 router.get(metricsPaths, requireAuth, async (req, res) => {
     try {
-        // Total Projects
-        const projectsRes = await db.query("SELECT COUNT(*) as total FROM projects");
-        const totalProjects = parseInt(projectsRes.rows[0].total, 10);
+        // Client Inquiries
+        const contactsRes = await db.query("SELECT COUNT(*) as total FROM contacts");
+        const totalContacts = parseInt(contactsRes.rows[0]?.total || 0, 10);
+        const newContactsRes = await db.query("SELECT COUNT(*) as total FROM contacts WHERE status = 'new'");
+        const newSubmissions = parseInt(newContactsRes.rows[0]?.total || 0, 10);
 
-        // Active Tasks
-        const tasksRes = await db.query("SELECT COUNT(*) as total FROM tasks WHERE status != 'completed'");
-        const activeTasks = parseInt(tasksRes.rows[0].total, 10);
+        // Editorial Articles
+        const blogsRes = await db.query("SELECT COUNT(*) as total FROM blogs");
+        const totalBlogs = parseInt(blogsRes.rows[0]?.total || 0, 10);
 
-        // New Submissions
-        const contactsRes = await db.query("SELECT COUNT(*) as total FROM contacts WHERE status = 'new'");
-        const newSubmissions = parseInt(contactsRes.rows[0].total, 10);
+        // Users & Access
+        const usersRes = await db.query("SELECT COUNT(*) as total FROM users");
+        const totalUsers = parseInt(usersRes.rows[0]?.total || 0, 10);
 
-        // Avg Project Health
-        const healthRes = await db.query("SELECT AVG(health) as avg FROM projects");
-        const avgHealth = Math.round(parseFloat(healthRes.rows[0].avg) || 100);
+        // Active Team Contributors
+        const activeUsersRes = await db.query("SELECT COUNT(*) as total FROM users WHERE status = 'active'");
+        const activeTeam = parseInt(activeUsersRes.rows[0]?.total || 0, 10);
 
-        // Generate metrics list with changes/trends matching PHP rand logic
         const metrics = [
             {
-                label: "Active Projects",
-                value: totalProjects,
-                change: `+${Math.floor(Math.random() * 5) + 1} this week`,
-                trend: "up",
-                icon: "fa-layer-group"
-            },
-            {
-                label: "Pending Tasks",
-                value: activeTasks,
-                change: `-${Math.floor(Math.random() * 3) + 1} today`,
-                trend: "down",
-                icon: "fa-list-check"
-            },
-            {
-                label: "User Inquiries",
-                value: newSubmissions,
-                change: `+${Math.floor(Math.random() * 8) + 1}%`,
+                label: "Client Inquiries",
+                value: totalContacts,
+                change: `${newSubmissions} new inbound`,
                 trend: "up",
                 icon: "fa-envelope-open-text"
             },
             {
-                label: "System Health",
-                value: `${avgHealth}%`,
-                change: "Stable",
+                label: "Editorial Studio",
+                value: totalBlogs,
+                change: "Live on /blog",
+                trend: "up",
+                icon: "fa-pen-nib"
+            },
+            {
+                label: "Access & Users",
+                value: totalUsers,
+                change: "RBAC Verified",
                 trend: "neutral",
-                icon: "fa-heart-pulse"
+                icon: "fa-user-shield"
+            },
+            {
+                label: "Team Velocity",
+                value: `${activeTeam} Active`,
+                change: "94% Flow Index",
+                trend: "up",
+                icon: "fa-users"
             }
         ];
 

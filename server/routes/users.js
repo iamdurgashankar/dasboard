@@ -3,6 +3,7 @@
  * Handles listing, updating, and decommissioning users.
  */
 import express from 'express';
+import bcrypt from 'bcryptjs';
 import db from '../db.js';
 import { 
     sendJsonResponse, 
@@ -14,8 +15,37 @@ import {
 const router = express.Router();
 
 const listPaths = ['/list', '/list.php'];
+const createPaths = ['/create', '/create.php'];
 const updatePaths = ['/update', '/update.php'];
 const deletePaths = ['/delete', '/delete.php'];
+
+// Create / Provision User API (Admin)
+router.post(createPaths, requireMutatingAuth, async (req, res) => {
+    const { name, email, password, role, avatar } = req.body;
+    if (!name || !email) {
+        return sendJsonResponse(res, "error", "Name and email are required.");
+    }
+    try {
+        const checkRes = await db.query('SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1', [email]);
+        if (checkRes.rows && checkRes.rows.length > 0) {
+            return sendJsonResponse(res, "error", "An account with this email already exists.");
+        }
+        const rawPassword = password && String(password).trim() ? String(password).trim() : 'DevInquire2026!';
+        const hashedPassword = await bcrypt.hash(rawPassword, 10);
+        const assignedRole = ['Admin', 'Developer', 'Viewer'].includes(role) ? role : 'Developer';
+
+        const insertRes = await db.query(
+            'INSERT INTO users (email, password, name, role, status, avatar) VALUES ($1, $2, $3, $4::user_role, $5::user_status, $6) RETURNING id',
+            [email.trim().toLowerCase(), hashedPassword, name.trim(), assignedRole, 'active', avatar || null]
+        );
+        return sendJsonResponse(res, "success", "User account provisioned.", {
+            id: insertRes.rows?.[0]?.id
+        });
+    } catch (err) {
+        console.error("User Create API Error:", err);
+        return sendJsonResponse(res, "error", "Failed to provision user.", null, 500);
+    }
+});
 
 // List Users API
 router.get(listPaths, requireAuth, async (req, res) => {
@@ -44,7 +74,7 @@ router.get(listPaths, requireAuth, async (req, res) => {
 
 // Update User Identity API
 router.post(updatePaths, requireMutatingAuth, async (req, res) => {
-    const { id, role, status, name, email } = req.body;
+    const { id, role, status, name, email, password, avatar } = req.body;
 
     if (!id) {
         return sendJsonResponse(res, "error", "User ID required for update.");
@@ -79,6 +109,15 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
         if (email !== undefined && email !== '') {
             fields.push(`email = $${paramCount++}`);
             params.push(email);
+        }
+        if (avatar !== undefined) {
+            fields.push(`avatar = $${paramCount++}`);
+            params.push(avatar);
+        }
+        if (password !== undefined && String(password).trim() !== '') {
+            const hashedPassword = await bcrypt.hash(String(password).trim(), 10);
+            fields.push(`password = $${paramCount++}`);
+            params.push(hashedPassword);
         }
 
         if (fields.length === 0) {

@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "main": "server.js",
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=10.0.0"
@@ -13,9 +14,10 @@
     "backend": "npm --prefix server start",
     "seed": "npm --prefix server run seed",
     "cron:generate-blog": "node server/cron/generateBlog.js",
+    "postinstall": "npm --prefix server install --omit=dev",
     "build": "tsc --noEmit && vite build",
     "build:ci": "CI=true tsc --noEmit --pretty false && CI=true vite build",
-    "start": "vite preview --host 0.0.0.0 --port 3000",
+    "start": "node server.js",
     "preview": "vite preview --host 0.0.0.0 --port 3000",
     "lint": "tsc --noEmit"
   },

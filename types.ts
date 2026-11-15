@@ -69,16 +69,33 @@ export interface ContactSubmission {
   priority: 'High' | 'Medium' | 'Low';
 }
 
+export interface ProjectUpdateItem {
+  id: string;
+  title: string;
+  summary: string;
+  author: string;
+  authorRole?: string;
+  date?: string;
+  timestamp?: string;
+  progress?: number;
+  progressAfter?: number;
+}
+
 export interface Project {
   id: string;
   name: string;
+  clientName?: string;
+  assignedDeveloper?: string;
+  assignedViewer?: string;
   description: string;
   language: string;
-  status: 'active' | 'archived' | 'maintenance';
+  status: 'active' | 'archived' | 'maintenance' | 'completed';
   health: number; // 0-100
   progress: number; // 0-100
   lastUpdate: string;
+  dueDate?: string;
   repoUrl?: string;
+  updates?: ProjectUpdateItem[];
   comments?: ProjectComment[];
   issues?: ProjectIssue[];
 }
@@ -121,6 +138,7 @@ export interface User {
 
 export enum DashboardTab {
   OVERVIEW = 'overview',
+  PROJECTS = 'projects',
   INQUIRE = 'inquire',
   ANALYTICS = 'analytics',
   TASKS = 'tasks',
@@ -133,9 +151,8 @@ export enum DashboardTab {
 export const ROLE_PERMISSIONS: Record<UserRole, DashboardTab[]> = {
   Admin: [
     DashboardTab.OVERVIEW,
+    DashboardTab.PROJECTS,
     DashboardTab.INQUIRE,
-    DashboardTab.ANALYTICS,
-    DashboardTab.TASKS,
     DashboardTab.BLOGS,
     DashboardTab.USERS,
     DashboardTab.TEAM,
@@ -143,18 +160,15 @@ export const ROLE_PERMISSIONS: Record<UserRole, DashboardTab[]> = {
   ],
   Developer: [
     DashboardTab.OVERVIEW,
+    DashboardTab.PROJECTS,
     DashboardTab.INQUIRE,
-    DashboardTab.ANALYTICS,
-    DashboardTab.TASKS,
     DashboardTab.BLOGS,
     DashboardTab.TEAM,
     DashboardTab.CONTACTS
   ],
   Viewer: [
     DashboardTab.OVERVIEW,
-    DashboardTab.ANALYTICS,
-    DashboardTab.TASKS,
-    DashboardTab.TEAM
+    DashboardTab.PROJECTS
   ]
 };
 

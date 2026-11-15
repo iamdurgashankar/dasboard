@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { DashboardTab, UserRole, ROLE_PERMISSIONS } from '../types';
@@ -11,95 +10,256 @@ interface SidebarProps {
   userRole: UserRole;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, isOpen, setIsOpen, userRole }) => {
+const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, userRole }) => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const allowedTabs = ROLE_PERMISSIONS[userRole];
+  const allowedTabs = ROLE_PERMISSIONS[userRole] || ROLE_PERMISSIONS.Admin;
 
   const allNavItems = [
-    { id: DashboardTab.OVERVIEW, label: 'Dashboard', icon: 'fa-chart-pie', path: '/' },
-    { id: DashboardTab.INQUIRE, label: 'DevInquire AI', icon: 'fa-robot', path: '/inquire' },
-    { id: DashboardTab.TASKS, label: 'Task Management', icon: 'fa-list-check', path: '/tasks' },
-    { id: DashboardTab.ANALYTICS, label: 'Analytics', icon: 'fa-microchip', path: '/analytics' },
-    { id: DashboardTab.CONTACTS, label: 'Client Leads', icon: 'fa-address-book', path: '/contacts' },
-    { id: DashboardTab.BLOGS, label: 'Blog Manager', icon: 'fa-pen-nib', path: '/blogs' },
-    { id: DashboardTab.USERS, label: 'User Management', icon: 'fa-user-shield', path: '/users' },
-    { id: DashboardTab.TEAM, label: 'Team Velocity', icon: 'fa-users', path: '/team' },
+    {
+      id: DashboardTab.OVERVIEW,
+      label: 'Overview',
+      icon: 'fa-chart-pie',
+      path: '/',
+      tint: 'from-[#6B63F2] to-[#4e45e1]',
+      group: 'Workspace'
+    },
+    {
+      id: DashboardTab.PROJECTS,
+      label: 'Client Projects',
+      icon: 'fa-diagram-project',
+      path: '/projects',
+      tint: 'from-[#6B63F2] to-[#4139BF]',
+      group: 'Workspace'
+    },
+    {
+      id: DashboardTab.INQUIRE,
+      label: 'DI AI',
+      icon: 'fa-wand-magic-sparkles',
+      path: '/inquire',
+      tint: 'from-[#BF5AF2] via-[#5E5CE6] to-[#6B63F2]',
+      group: 'Workspace'
+    },
+    {
+      id: DashboardTab.CONTACTS,
+      label: 'Client Inquiries',
+      icon: 'fa-envelope-open-text',
+      path: '/contacts',
+      tint: 'from-[#30D158] to-[#248A3D]',
+      group: 'Management'
+    },
+    {
+      id: DashboardTab.BLOGS,
+      label: 'Editorial Studio',
+      icon: 'fa-pen-nib',
+      path: '/blogs',
+      tint: 'from-[#FF375F] to-[#D70015]',
+      group: 'Management'
+    },
+    {
+      id: DashboardTab.USERS,
+      label: 'Access & Users',
+      icon: 'fa-user-shield',
+      path: '/users',
+      tint: 'from-[#5E5CE6] to-[#3634A3]',
+      group: 'Management'
+    },
+    {
+      id: DashboardTab.TEAM,
+      label: 'Team Velocity',
+      icon: 'fa-users',
+      path: '/team',
+      tint: 'from-[#BF5AF2] to-[#8944AB]',
+      group: 'Management'
+    },
   ];
 
-  // Filter items based on RBAC
   const navItems = allNavItems.filter(item => allowedTabs.includes(item.id));
-
-  const openExternalBlog = (e: React.MouseEvent) => {
-    e.preventDefault();
-    window.open('https://devinquire.com/blog', '_blank', 'noopener,noreferrer');
-  };
+  const workspaceItems = navItems.filter(item => item.group === 'Workspace');
+  const operationsItems = navItems.filter(item => item.group === 'Management');
 
   const handleNav = (id: DashboardTab, path: string) => {
     setActiveTab(id);
     navigate(path);
   };
 
-  return (
-    <aside className={`${isOpen ? 'w-64' : 'w-20'} h-full bg-slate-900 border-r border-slate-800 transition-all duration-300 flex flex-col z-50 overflow-hidden`}>
-      <div className="p-6 flex items-center gap-3">
-        <div className={`w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shrink-0`}>
-          <i className="fas fa-terminal text-white"></i>
+  const isRouteActive = (path: string) => {
+    if (path === '/') return location.pathname === '/';
+    if (path === '/projects') return location.pathname.startsWith('/projects') || location.pathname.startsWith('/project/');
+    if (path === '/blogs') return location.pathname === '/blogs' || location.pathname === '/blog';
+    return location.pathname.startsWith(path);
+  };
+
+  const renderTooltip = (label: string, section?: string) => {
+    if (isOpen) return null;
+    return (
+      <div className="pointer-events-none absolute left-[calc(100%+12px)] top-1/2 -translate-y-1/2 opacity-0 translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-150 z-[100] whitespace-nowrap">
+        <div className="relative px-3 py-1.5 rounded-[10px] bg-[#1C1C1E] dark:bg-[#2C2C2E] text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] border border-white/10 flex flex-col items-start">
+          {/* Tooltip Left Arrow */}
+          <span className="absolute -left-1 top-1/2 -translate-y-1/2 w-2 h-2 rotate-45 bg-[#1C1C1E] dark:bg-[#2C2C2E] border-l border-b border-white/10"></span>
+          {section && (
+            <span className="text-[9px] uppercase tracking-wider font-semibold text-white/55 leading-none mb-0.5 badge-white">
+              {section}
+            </span>
+          )}
+          <span className="text-[12px] font-semibold text-white leading-tight badge-white">
+            {label}
+          </span>
         </div>
-        <span className={`font-bold text-xl tracking-tight text-white whitespace-nowrap transition-all duration-300 ${isOpen ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-4 pointer-events-none'}`}>
-          DevInquire
-        </span>
+      </div>
+    );
+  };
+
+  return (
+    <aside
+      className={`${
+        isOpen ? 'w-[264px]' : 'w-[78px]'
+      } h-full apple-glass-sidebar transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] flex flex-col z-50 overflow-visible select-none shrink-0 relative`}
+    >
+      {/* DevInquire Identity Header + Sidebar Collapse Toggle */}
+      <div className={`h-[60px] ${isOpen ? 'px-4 justify-between' : 'px-0 justify-center'} flex items-center border-b border-[var(--apple-border)] shrink-0 relative`}>
+        <div
+          onClick={() => handleNav(DashboardTab.OVERVIEW, '/')}
+          className="flex items-center gap-3 min-w-0 cursor-pointer group relative"
+        >
+          <div className="w-9 h-9 rounded-xl bg-[#4e45e1] flex items-center justify-center shrink-0 shadow-[0_6px_16px_rgba(78,69,225,0.35)] relative overflow-hidden transition-transform duration-200 group-hover:scale-105">
+            <div className="absolute inset-0 bg-white/20 opacity-50"></div>
+            <div className="relative z-10 flex items-center justify-center text-white font-bold text-[12px] tracking-tight badge-white">
+              <span className="text-white/80 mr-0.5 text-[11px] badge-white">&#123;</span>
+              <span className="text-white font-bold badge-white">DI</span>
+              <span className="text-white/80 ml-0.5 text-[11px] badge-white">&#125;</span>
+            </div>
+          </div>
+          {isOpen && (
+            <div className="flex flex-col min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-[16px] tracking-tight text-[#4e45e1] dark:text-[#8179FF] truncate">
+                  DevInquire
+                </span>
+              </div>
+              <span className="text-[11px] text-[var(--apple-text-tertiary)] truncate">
+                Enterprise Command Hub
+              </span>
+            </div>
+          )}
+          {renderTooltip('DevInquire Studio', 'Home')}
+        </div>
+
+        {isOpen && (
+          <button
+            onClick={() => setIsOpen(false)}
+            title="Collapse Sidebar"
+            className="w-7 h-7 rounded-lg text-[var(--apple-text-tertiary)] hover:text-[var(--apple-text-primary)] hover:bg-[var(--apple-surface-subcard-hover)] flex items-center justify-center transition-colors shrink-0"
+          >
+            <i className="fas fa-table-columns text-xs"></i>
+          </button>
+        )}
       </div>
 
-      <nav className="flex-1 mt-6 px-4 space-y-2 overflow-y-auto overflow-x-hidden custom-scrollbar py-2">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => handleNav(item.id, item.path)}
-            className={`w-full flex items-center gap-4 p-3 rounded-xl transition-all duration-200 ease-in-out active:scale-[0.98] ${location.pathname === item.path || (item.path === '/blogs' && location.pathname === '/blog')
-              ? 'bg-indigo-600/15 text-indigo-400 border border-indigo-600/30 shadow-[0_0_15px_rgba(99,102,241,0.1)]'
-              : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-100 border border-transparent'
-              }`}
-          >
-            <i className={`fas ${item.icon} text-lg w-6 shrink-0`}></i>
-            <span className={`font-medium whitespace-nowrap transition-all duration-300 ${isOpen ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-4 pointer-events-none'}`}>
-              {item.label}
-            </span>
-          </button>
-        ))}
+      {/* Navigation Sections */}
+      <nav className="flex-1 px-3 py-3 space-y-5 overflow-visible">
+        {workspaceItems.length > 0 && (
+          <div className="space-y-1.5">
+            {isOpen && (
+              <p className="text-[11px] font-semibold text-[var(--apple-text-tertiary)] px-3 mb-1.5 tracking-tight">
+                Workspace
+              </p>
+            )}
+            {workspaceItems.map((item) => {
+              const active = isRouteActive(item.path);
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleNav(item.id, item.path)}
+                  className={`group relative w-full flex items-center ${
+                    isOpen ? 'gap-3 px-2.5 justify-start' : 'justify-center px-0'
+                  } py-2 rounded-[11px] text-[13px] transition-all duration-150 active:scale-[0.985] ${
+                    active
+                      ? 'bg-[#4e45e1]/12 dark:bg-white/[0.13] text-[var(--apple-blue)] dark:text-white font-semibold shadow-sm border border-[#4e45e1]/20 dark:border-white/[0.12]'
+                      : 'text-[var(--apple-text-secondary)] hover:bg-[var(--apple-surface-subcard-hover)] hover:text-[var(--apple-text-primary)] font-medium border border-transparent'
+                  }`}
+                >
+                  <div
+                    className={`w-8 h-8 rounded-[9px] bg-gradient-to-b ${item.tint} flex items-center justify-center shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_2px_5px_rgba(0,0,0,0.2)] transition-transform duration-150 group-hover:scale-105`}
+                  >
+                    <i className={`fas ${item.icon} text-[12px] text-white badge-white`}></i>
+                  </div>
+                  {isOpen && (
+                    <span className="truncate whitespace-nowrap">
+                      {item.label}
+                    </span>
+                  )}
+                  {renderTooltip(item.label, item.group)}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
-        <div className={`pt-4 mt-4 border-t border-slate-800 transition-all duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
-          <p className="text-[10px] uppercase font-bold text-slate-600 mb-2 px-3 whitespace-nowrap">Public Site</p>
-          <a
-            href="https://devinquire.com/blog"
-            onClick={openExternalBlog}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center gap-4 p-3 rounded-xl text-slate-400 hover:bg-emerald-600/10 hover:text-emerald-400 border border-transparent hover:border-emerald-600/20 transition-all duration-200"
-            title="Open /blog on devinquire.com"
-          >
-            <i className="fas fa-globe text-lg w-6 shrink-0"></i>
-            <span className="font-medium whitespace-nowrap">devinquire.com/blog</span>
-            <i className="fas fa-external-link-alt text-[10px] opacity-50 ml-auto"></i>
-          </a>
-        </div>
+        {operationsItems.length > 0 && (
+          <div className="space-y-1.5 pt-2 border-t border-[var(--apple-border)]">
+            {isOpen && (
+              <p className="text-[11px] font-semibold text-[var(--apple-text-tertiary)] px-3 mb-1.5 tracking-tight">
+                Management
+              </p>
+            )}
+            {operationsItems.map((item) => {
+              const active = isRouteActive(item.path);
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => handleNav(item.id, item.path)}
+                  className={`group relative w-full flex items-center ${
+                    isOpen ? 'gap-3 px-2.5 justify-start' : 'justify-center px-0'
+                  } py-2 rounded-[11px] text-[13px] transition-all duration-150 active:scale-[0.985] ${
+                    active
+                      ? 'bg-[#4e45e1]/12 dark:bg-white/[0.13] text-[var(--apple-blue)] dark:text-white font-semibold shadow-sm border border-[#4e45e1]/20 dark:border-white/[0.12]'
+                      : 'text-[var(--apple-text-secondary)] hover:bg-[var(--apple-surface-subcard-hover)] hover:text-[var(--apple-text-primary)] font-medium border border-transparent'
+                  }`}
+                >
+                  <div
+                    className={`w-8 h-8 rounded-[9px] bg-gradient-to-b ${item.tint} flex items-center justify-center shrink-0 shadow-[inset_0_1px_0_rgba(255,255,255,0.3),0_2px_5px_rgba(0,0,0,0.2)] transition-transform duration-150 group-hover:scale-105`}
+                  >
+                    <i className={`fas ${item.icon} text-[12px] text-white badge-white`}></i>
+                  </div>
+                  {isOpen && (
+                    <span className="truncate whitespace-nowrap">
+                      {item.label}
+                    </span>
+                  )}
+                  {renderTooltip(item.label, item.group)}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </nav>
 
-      <div className="p-4 mt-auto">
-        <div className={`p-3 bg-slate-800/50 rounded-xl border border-slate-700/50 transition-all duration-300 ${isOpen ? 'opacity-100 scale-100' : 'opacity-0 scale-95 pointer-events-none'}`}>
-          <p className="text-[10px] uppercase font-bold text-slate-500 mb-1 whitespace-nowrap">Your Access</p>
-          <p className="text-xs font-semibold text-indigo-400 whitespace-nowrap">{userRole}</p>
-        </div>
-        <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="w-full flex items-center gap-4 p-3 mt-2 rounded-xl text-slate-400 hover:bg-slate-800 transition-all"
-        >
-          <i className={`fas ${isOpen ? 'fa-angle-left' : 'fa-angle-right'} text-lg w-6 shrink-0`}></i>
-          <span className={`font-medium whitespace-nowrap transition-all duration-300 ${isOpen ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-4 pointer-events-none'}`}>
-            Collapse
-          </span>
-        </button>
+      {/* Bottom Status / Expand Card */}
+      <div className="p-3 mt-auto border-t border-[var(--apple-border)]">
+        {isOpen ? (
+          <div className="p-3 rounded-[14px] apple-subcard flex items-center justify-between whitespace-nowrap overflow-hidden">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="w-2 h-2 rounded-full bg-[#28CD41] shadow-[0_0_8px_#28CD41] shrink-0"></span>
+              <div className="min-w-0">
+                <p className="text-[11px] font-medium text-[var(--apple-text-tertiary)] leading-none">Role Privilege</p>
+                <p className="text-[13px] font-semibold text-[var(--apple-text-primary)] truncate mt-1">{userRole}</p>
+              </div>
+            </div>
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#4e45e1]/12 text-[var(--apple-blue)] border border-[#4e45e1]/20 shrink-0">
+              Verified
+            </span>
+          </div>
+        ) : (
+          <button
+            onClick={() => setIsOpen(true)}
+            className="group relative w-full py-2.5 rounded-[11px] text-[var(--apple-text-tertiary)] hover:text-[var(--apple-text-primary)] hover:bg-[var(--apple-surface-subcard-hover)] flex items-center justify-center transition-colors"
+          >
+            <i className="fas fa-chevron-right text-xs"></i>
+            {renderTooltip('Expand Sidebar', `${userRole} · Verified`)}
+          </button>
+        )}
       </div>
     </aside>
   );
