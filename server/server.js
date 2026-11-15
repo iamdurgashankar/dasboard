@@ -66,13 +66,14 @@ import analyticsRouter from "./routes/analytics.js";
 import publicRouter from "./routes/public.js";
 import feedbackRouter from "./routes/feedback.js";
 
-// Conditionally import persistent session store when Postgres is available
+import connectPgSimple from "connect-pg-simple";
+import pg from "pg";
+
+// Conditionally configure persistent session store when Postgres is available
 let PgStore = null;
 try {
-  const pgStoreModule = await import("connect-pg-simple");
-  const pgModule = await import("pg");
-  const StoreFactory = pgStoreModule.default || pgStoreModule;
-  const PoolCtor = pgModule.Pool || pgModule.default?.Pool || pgModule;
+  const StoreFactory = connectPgSimple.default || connectPgSimple;
+  const PoolCtor = pg.Pool || pg.default?.Pool || pg;
   const connectionString = (process.env.DATABASE_URL || "").trim();
   const usePg =
     connectionString &&
