@@ -3,10 +3,69 @@
  * Exposes public endpoints that do not require admin authentication.
  */
 import express from 'express';
+import nodemailer from 'nodemailer';
 import db from '../db.js';
 import { sendJsonResponse, createNotification } from '../utils.js';
 
 const router = express.Router();
+
+async function dispatchInquiryEmail(config, inquiry) {
+    const smtpHost = config.smtpHost || process.env.SMTP_HOST || 'smtp.gmail.com';
+    const smtpPort = Number(config.smtpPort || process.env.SMTP_PORT || 587);
+    const smtpUser = config.smtpUser || process.env.SMTP_USERNAME || '';
+    const smtpPass = config.smtpPass || process.env.SMTP_PASSWORD || '';
+    const recipient = config.recipientEmail || process.env.CONTACT_EMAIL || 'contact@devinquire.com';
+    const fromEmail = config.fromEmail || process.env.SMTP_FROM || process.env.MAIL_FROM_ADDRESS || smtpUser || 'noreply@devinquire.com';
+    const fromName = config.fromName || process.env.MAIL_FROM_NAME || 'DevInquire';
+
+    if (!smtpUser || !smtpPass) {
+        return false;
+    }
+
+    const transporter = nodemailer.createTransport({
+        host: smtpHost,
+        port: smtpPort,
+        secure: smtpPort === 465 || process.env.SMTP_SECURE === 'true',
+        auth: { user: smtpUser, pass: smtpPass },
+        tls: { rejectUnauthorized: false }
+    });
+
+    const lines = [
+        `Name: ${inquiry.name}`,
+        `Email: ${inquiry.email}`,
+        inquiry.phone ? `Phone: ${inquiry.phone}` : null,
+        inquiry.company ? `Company: ${inquiry.company}` : null,
+        inquiry.service ? `Service: ${inquiry.service}` : null,
+        inquiry.timeline ? `Timeline: ${inquiry.timeline}` : null,
+        `Subject: ${inquiry.subject}`,
+        '',
+        'Message:',
+        inquiry.message
+    ].filter(Boolean);
+
+    await transporter.sendMail({
+        from: `"${fromName}" <${fromEmail}>`,
+        to: recipient,
+        replyTo: inquiry.email,
+        subject: `New Inquiry: ${inquiry.subject}`,
+        text: lines.join('\n')
+    });
+
+    if (config.autoReplyEnabled !== false && inquiry.email) {
+        const replyBody = (config.autoReplyTemplate || 'Hello {{name}}, thank you for reaching out to DevInquire. We have received your inquiry regarding "{{subject}}" and will respond within 24 hours.')
+            .replace(/\{\{name\}\}/g, inquiry.name || 'Client')
+            .replace(/\{\{subject\}\}/g, inquiry.subject || 'your inquiry');
+
+        await transporter.sendMail({
+            from: `"${fromName}" <${fromEmail}>`,
+            to: inquiry.email,
+            subject: config.autoReplySubject || 'Thank you for contacting DevInquire',
+            text: replyBody
+        }).catch(() => {});
+    }
+
+    return true;
+}
 
 const blogListPaths = ['/blog_list', '/blog_list.php'];
 const blogDetailPaths = ['/blog_detail', '/blog_detail.php'];
@@ -81,8 +140,23 @@ router.post(contactIntakePaths, async (req, res) => {
             '/contacts'
         ).catch(() => {});
 
+        const emailSent = await dispatchInquiryEmail(config, {
+            name: String(name).trim(),
+            email: cleanEmail,
+            phone: phone || '',
+            company: company || '',
+            service: service || '',
+            timeline: timeline || '',
+            subject: cleanSubject,
+            message: cleanMessage
+        }).catch((mailErr) => {
+            console.warn("Inquiry email dispatch warning:", mailErr.message);
+            return false;
+        });
+
         return sendJsonResponse(res, "success", "Inquiry recorded in dashboard ledger.", {
-            id: newId
+            id: newId,
+            emailSent
         });
     } catch (err) {
         console.error("Public Contact Intake Error:", err);

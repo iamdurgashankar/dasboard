@@ -809,13 +809,13 @@ function translatePgToMySQL(text) {
     /\bTIMESTAMP WITH TIME ZONE\b/gi,
     "TIMESTAMP",
   );
+  translatedText = translatedText.replace(/::[a-zA-Z_0-9]+/g, "");
   translatedText = translatedText.replace(
     /\b(user_role|user_status|project_status|task_status|task_priority|blog_status|notification_type|contact_status|contact_priority)\b/gi,
     "VARCHAR(50)",
   );
   translatedText = translatedText.replace(/\bJSONB\b/gi, "JSON");
   translatedText = translatedText.replace(/\$\d+/g, "?");
-  translatedText = translatedText.replace(/::[a-zA-Z_0-9]+/g, "");
   translatedText = translatedText.replace(/\bILIKE\b/gi, "LIKE");
   translatedText = translatedText.replace(
     /CREATE\s+(UNIQUE\s+)?INDEX\s+IF\s+NOT\s+EXISTS\s+\w+\s+ON\s+\w+\s*\([^)]+\);/gi,

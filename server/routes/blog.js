@@ -172,6 +172,10 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
         .catch(() => {});
     }
 
+    if (initialStatus === "published") {
+      await triggerMainSiteSync();
+    }
+
     return sendJsonResponse(res, "success", "Blog post saved.", {
       id: postId,
       slug: resolvedSlug,
@@ -188,6 +192,29 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
   }
 });
 
+async function triggerMainSiteSync() {
+  const blogConfig = db.getSettings("blog_config");
+  if (blogConfig.autoSyncOnPublish === false) {
+    return false;
+  }
+  const baseSite = (blogConfig.siteUrl || "http://localhost:8000").replace(/\/$/, "");
+  const token = process.env.SYNC_WEBHOOK_SECRET || "devinquire-secret-token-123";
+  const webhookUrl =
+    process.env.MAINSITE_SYNC_WEBHOOK_URL ||
+    process.env.FRONTEND_WEBHOOK_URL ||
+    `${baseSite}/api/sync-posts?token=${encodeURIComponent(token)}`;
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "GET",
+      signal: AbortSignal.timeout(5000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 // Sync Blog Post API (Publish + Webhook trigger)
 router.post(syncPaths, requireMutatingAuth, async (req, res) => {
   const { id } = req.body;
@@ -203,40 +230,14 @@ router.post(syncPaths, requireMutatingAuth, async (req, res) => {
     await db.query(updateQuery, [id]);
 
     // 2. Trigger the webhook on main site
-    const blogConfig = db.getSettings("blog_config");
-    const baseSite = (blogConfig.siteUrl || "http://localhost:8000").replace(/\/$/, "");
-    const token = process.env.SYNC_WEBHOOK_SECRET || "devinquire-secret-token-123";
-    const webhookUrl =
-      process.env.MAINSITE_SYNC_WEBHOOK_URL ||
-      process.env.FRONTEND_WEBHOOK_URL ||
-      `${baseSite}/api/sync-posts?token=${encodeURIComponent(token)}`;
-
-    try {
-      const response = await fetch(webhookUrl, {
-        method: "GET",
-        signal: AbortSignal.timeout(8000),
-      });
-
-      if (response.ok) {
-        return sendJsonResponse(
-          res,
-          "success",
-          "Article published and synced to live website.",
-        );
-      } else {
-        return sendJsonResponse(
-          res,
-          "success",
-          "Article published live on Public Blog API and Editorial Ledger.",
-        );
-      }
-    } catch {
-      return sendJsonResponse(
-        res,
-        "success",
-        "Article published live on Public Blog API and Editorial Ledger.",
-      );
-    }
+    const syncedOk = await triggerMainSiteSync();
+    return sendJsonResponse(
+      res,
+      "success",
+      syncedOk
+        ? "Article published and synced to live website."
+        : "Article published live on Public Blog API and Editorial Ledger.",
+    );
   } catch (err) {
     console.error("Blog Sync API Error:", err);
     return sendJsonResponse(res, "error", "Failed to sync article.", null, 500);
@@ -321,6 +322,7 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
 
     const query = `UPDATE blog_posts SET ${updates.join(", ")} WHERE id = $${paramCount}`;
     await db.query(query, params);
+    await triggerMainSiteSync();
 
     return sendJsonResponse(res, "success", "Blog post updated successfully.");
   } catch (err) {
@@ -346,6 +348,7 @@ router.post(deletePaths, requireMutatingAuth, async (req, res) => {
   try {
     const query = "DELETE FROM blog_posts WHERE id = $1";
     await db.query(query, [id]);
+    await triggerMainSiteSync();
     return sendJsonResponse(res, "success", "Blog post deleted successfully.");
   } catch (err) {
     console.error("Blog Delete API Error:", err);
