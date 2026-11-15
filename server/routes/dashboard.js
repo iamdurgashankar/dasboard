@@ -53,7 +53,7 @@ router.get(metricsPaths, requireAuth, async (req, res) => {
         const newSubmissions = parseInt(newContactsRes.rows[0]?.total || 0, 10);
 
         // Editorial Articles
-        const blogsRes = await db.query("SELECT COUNT(*) as total FROM blogs");
+        const blogsRes = await db.query("SELECT COUNT(*) as total FROM blog_posts");
         const totalBlogs = parseInt(blogsRes.rows[0]?.total || 0, 10);
 
         // Users & Access
