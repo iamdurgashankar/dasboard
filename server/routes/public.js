@@ -96,7 +96,7 @@ router.get(blogListPaths, async (req, res) => {
 
     try {
         let query = `
-            SELECT b.id, b.title, b.excerpt, b.category, b.tags, b.created_at, u.name as author_name 
+            SELECT b.id, b.slug, b.title, b.excerpt, b.content, b.category, b.tags, b.featured_image, b.read_time, b.is_featured, b.created_at, COALESCE(b.author_name, u.name, 'DevInquire Editorial') as author_name 
             FROM blog_posts b 
             LEFT JOIN users u ON b.author_id = u.id 
             WHERE b.status = 'published'
@@ -144,7 +144,7 @@ router.get(blogDetailPaths, async (req, res) => {
 
     try {
         let query = `
-            SELECT b.*, u.name as author_name 
+            SELECT b.*, COALESCE(b.author_name, u.name, 'DevInquire Editorial') as author_name 
             FROM blog_posts b 
             LEFT JOIN users u ON b.author_id = u.id 
             WHERE b.status = 'published'

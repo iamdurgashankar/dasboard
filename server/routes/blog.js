@@ -158,8 +158,16 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
     if (postId) {
       await db
         .query(
-          "UPDATE blog_posts SET slug = $1, author_name = $2, status = $3 WHERE id = $4",
-          [resolvedSlug, resolvedAuthor, initialStatus, postId],
+          "UPDATE blog_posts SET slug = $1, author_name = $2, status = $3, featured_image = $4, read_time = $5, is_featured = $6 WHERE id = $7",
+          [
+            resolvedSlug,
+            resolvedAuthor,
+            initialStatus,
+            featured_image || null,
+            read_time || 5,
+            Boolean(is_featured) ? 1 : 0,
+            postId,
+          ],
         )
         .catch(() => {});
     }
