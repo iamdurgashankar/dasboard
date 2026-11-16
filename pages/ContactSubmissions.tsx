@@ -81,7 +81,7 @@ const ContactSubmissions: React.FC = () => {
   useEffect(() => {
     fetchSubmissions(false);
     fetchConfig();
-    const interval = setInterval(() => fetchSubmissions(true), 4000);
+    const interval = setInterval(() => fetchSubmissions(true), 15000);
     const onFocus = () => fetchSubmissions(true);
     const onVisibility = () => {
       if (document.visibilityState === 'visible') fetchSubmissions(true);

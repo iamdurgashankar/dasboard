@@ -311,7 +311,8 @@ app.use((req, res, next) => {
   const p = (req.baseUrl || "") + (req.path || req.url || "").split("?")[0];
   if (p === "/api/auth/login" || p === "/api/auth/login.php")
     return authLimiter(req, res, next);
-  if (p.startsWith("/api/contact")) return contactLimiter(req, res, next);
+  if (p === "/api/public/contact_intake" || p === "/api/public/contact_intake.php")
+    return contactLimiter(req, res, next);
   if (p.startsWith("/api/blog/create")) return blogMutateLimiter(req, res, next);
   if (p.startsWith("/api/blog/update")) return blogMutateLimiter(req, res, next);
   if (p.startsWith("/api/blog/delete")) return blogMutateLimiter(req, res, next);
