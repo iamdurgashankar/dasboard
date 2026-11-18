@@ -588,6 +588,13 @@ export const api = {
         update: (id: string, data: any) => api.fetch('/projects/update', {
             method: 'POST',
             body: JSON.stringify({ id, ...data })
+        }),
+        delete: (id: string) => api.fetch('/projects/delete', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        }),
+        clear: () => api.fetch('/projects/clear', {
+            method: 'POST'
         })
     },
 

@@ -16,6 +16,8 @@ const listPaths = ['/list', '/list.php'];
 const detailPaths = ['/detail', '/detail.php'];
 const createPaths = ['/create', '/create.php'];
 const updatePaths = ['/update', '/update.php'];
+const deletePaths = ['/delete', '/delete.php'];
+const clearPaths = ['/clear', '/clear.php'];
 
 // List Projects API
 router.get(listPaths, requireAuth, async (req, res) => {
@@ -220,6 +222,35 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
     } catch (err) {
         console.error("Project Update API Error:", err);
         return sendJsonResponse(res, "error", "Failed to update project state.", null, 500);
+    }
+});
+
+// Delete Single Project API (Admin)
+router.post(deletePaths, requireMutatingAuth, async (req, res) => {
+    const { id } = req.body || {};
+    if (!id) {
+        return sendJsonResponse(res, "error", "Project ID required for deletion.", null, 400);
+    }
+
+    try {
+        await db.query('DELETE FROM tasks WHERE project_id = $1', [id]).catch(() => {});
+        await db.query('DELETE FROM projects WHERE id = $1', [id]);
+        return sendJsonResponse(res, "success", "Project deleted successfully.");
+    } catch (err) {
+        console.error("Project Delete API Error:", err);
+        return sendJsonResponse(res, "error", "Failed to delete project.", null, 500);
+    }
+});
+
+// Clear All Projects API (Admin)
+router.post(clearPaths, requireMutatingAuth, async (req, res) => {
+    try {
+        await db.query('DELETE FROM tasks WHERE project_id IS NOT NULL').catch(() => {});
+        await db.query('DELETE FROM projects');
+        return sendJsonResponse(res, "success", "All client projects cleared.");
+    } catch (err) {
+        console.error("Projects Clear API Error:", err);
+        return sendJsonResponse(res, "error", "Failed to clear projects.", null, 500);
     }
 });
 

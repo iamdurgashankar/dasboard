@@ -24,7 +24,8 @@ export function isProjectAssignedToViewer(project: Project, user?: User | null):
 const ClientProjects: React.FC<ClientProjectsProps> = ({ currentUser }) => {
   const navigate = useNavigate();
   const isViewer = currentUser?.role === 'Viewer';
-  const canManage = currentUser?.role === 'Admin' || currentUser?.role === 'Developer';
+  const isAdmin = currentUser?.role === 'Admin';
+  const canManage = isAdmin || currentUser?.role === 'Developer';
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -146,6 +147,27 @@ const ClientProjects: React.FC<ClientProjectsProps> = ({ currentUser }) => {
     }
   };
 
+  const handleDeleteProject = async (project: Project, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete project "${project.name}"? This cannot be undone.`)) return;
+    try {
+      await api.projects.delete(project.id);
+      fetchProjects();
+    } catch (err) {
+      console.error('Delete project error:', err);
+    }
+  };
+
+  const handleClearAllProjects = async () => {
+    if (!window.confirm(`Remove all ${projects.length} client projects? This cannot be undone.`)) return;
+    try {
+      await api.projects.clear();
+      fetchProjects();
+    } catch (err) {
+      console.error('Clear projects error:', err);
+    }
+  };
+
   const openUpdateModal = (project: Project, e: React.MouseEvent) => {
     e.stopPropagation();
     setUpdatingProject(project);
@@ -211,13 +233,24 @@ const ClientProjects: React.FC<ClientProjectsProps> = ({ currentUser }) => {
         </div>
 
         {canManage && (
-          <button
-            onClick={() => setIsCreateModalOpen(true)}
-            className="h-10 px-4 apple-pill-btn rounded-[12px] text-[13px] font-semibold inline-flex items-center justify-center gap-2 shrink-0 whitespace-nowrap self-start md:self-center"
-          >
-            <i className="fas fa-plus text-xs badge-white shrink-0"></i>
-            <span>New Client Project</span>
-          </button>
+          <div className="flex items-center gap-2.5 self-start md:self-center">
+            {isAdmin && projects.length > 0 && (
+              <button
+                onClick={handleClearAllProjects}
+                className="h-10 px-4 rounded-[12px] text-[13px] font-semibold inline-flex items-center justify-center gap-2 bg-[#FF3B30]/10 text-[#FF3B30] hover:bg-[#FF3B30]/20 transition-colors shrink-0 whitespace-nowrap"
+              >
+                <i className="fas fa-trash-can text-xs shrink-0"></i>
+                <span>Clear All</span>
+              </button>
+            )}
+            <button
+              onClick={() => setIsCreateModalOpen(true)}
+              className="h-10 px-4 apple-pill-btn rounded-[12px] text-[13px] font-semibold inline-flex items-center justify-center gap-2 shrink-0 whitespace-nowrap"
+            >
+              <i className="fas fa-plus text-xs badge-white shrink-0"></i>
+              <span>New Client Project</span>
+            </button>
+          </div>
         )}
       </div>
 
@@ -346,17 +379,29 @@ const ClientProjects: React.FC<ClientProjectsProps> = ({ currentUser }) => {
                       </div>
                     </div>
 
-                    <span
-                      className={`text-[11px] font-semibold uppercase px-2.5 py-1 rounded-full shrink-0 ${
-                        project.status === 'active'
-                          ? 'bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]'
-                          : project.status === 'completed'
-                          ? 'bg-[#4e45e1]/12 text-[var(--apple-blue)]'
-                          : 'apple-subcard text-[var(--apple-text-tertiary)]'
-                      }`}
-                    >
-                      {project.status}
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className={`text-[11px] font-semibold uppercase px-2.5 py-1 rounded-full ${
+                          project.status === 'active'
+                            ? 'bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]'
+                            : project.status === 'completed'
+                            ? 'bg-[#4e45e1]/12 text-[var(--apple-blue)]'
+                            : 'apple-subcard text-[var(--apple-text-tertiary)]'
+                        }`}
+                      >
+                        {project.status}
+                      </span>
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={(e) => handleDeleteProject(project, e)}
+                          title="Delete Project"
+                          className="w-7 h-7 rounded-full apple-subcard text-[var(--apple-text-tertiary)] hover:text-[#FF3B30] flex items-center justify-center transition-colors"
+                        >
+                          <i className="fas fa-trash-can text-[11px]"></i>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <p className="text-[13px] text-[var(--apple-text-secondary)] leading-relaxed line-clamp-2 mb-5">
