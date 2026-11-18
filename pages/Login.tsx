@@ -35,33 +35,11 @@ const Login: React.FC<LoginProps> = ({ onLogin, theme = 'light', toggleTheme }) 
           setErrorMessage(result.message || 'Invalid credentials. Please try again.');
         }
       } else {
-        try {
-          const regRes = await api.auth.register({ name: name.trim(), email: email.trim(), password });
-          if (regRes.status === 'success' && regRes.data?.user) {
-            setPendingUser(regRes.data.user);
-          } else {
-            setPendingUser({
-              id: `req-${Date.now()}`,
-              name: name.trim(),
-              email: email.trim(),
-              role: 'Developer',
-              status: 'pending',
-              joinDate: new Date().toISOString().split('T')[0]
-            });
-          }
-        } catch (regErr: any) {
-          if (regErr?.message?.includes('already registered')) {
-            setErrorMessage(regErr.message);
-          } else {
-            setPendingUser({
-              id: `req-${Date.now()}`,
-              name: name.trim(),
-              email: email.trim(),
-              role: 'Developer',
-              status: 'pending',
-              joinDate: new Date().toISOString().split('T')[0]
-            });
-          }
+        const regRes = await api.auth.register({ name: name.trim(), email: email.trim(), password });
+        if (regRes.status === 'success' && regRes.data?.user) {
+          setPendingUser(regRes.data.user);
+        } else {
+          setErrorMessage(regRes.message || 'Unable to submit access request.');
         }
       }
     } catch (err: any) {

@@ -9,7 +9,8 @@ import {
     sendJsonResponse, 
     generateCsrfToken, 
     requireAuth,
-    normalizeRole
+    normalizeRole,
+    createNotification
 } from '../utils.js';
 
 const router = express.Router();
@@ -131,6 +132,14 @@ router.post(registerPaths, async (req, res) => {
             [normalizedEmail, hashedPass, String(name).trim()]
         );
         const userId = insertRes.rows?.[0]?.id || `req-${Date.now()}`;
+
+        await createNotification(
+            null,
+            'info',
+            'New Access Request',
+            `${String(name).trim()} (${normalizedEmail}) requested workspace access.`,
+            '/users'
+        ).catch(() => {});
 
         return sendJsonResponse(res, "success", "Access request queued for administrative override.", {
             user: {

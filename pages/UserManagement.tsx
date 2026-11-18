@@ -69,6 +69,7 @@ const UserManagement: React.FC = () => {
         const mapped = (res.data || []).map((u: any) => ({
           ...u,
           id: String(u.id),
+          status: String(u.status || 'active').toLowerCase() === 'pending' ? 'pending' : 'active',
           joinDate: u.joinDate ? String(u.joinDate).split(' ')[0].split('T')[0] : 'Active'
         }));
         setUsers(mapped);
