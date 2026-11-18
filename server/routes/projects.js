@@ -225,8 +225,13 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
     }
 });
 
-// Delete Single Project API (Admin)
+// Delete Single Project API (Admin only)
 router.post(deletePaths, requireMutatingAuth, async (req, res) => {
+    const role = String(req.session?.user_role || '').toLowerCase();
+    if (role !== 'admin') {
+        return sendJsonResponse(res, "error", "Forbidden: Administrator access required.", null, 403);
+    }
+
     const { id } = req.body || {};
     if (!id) {
         return sendJsonResponse(res, "error", "Project ID required for deletion.", null, 400);
@@ -242,8 +247,13 @@ router.post(deletePaths, requireMutatingAuth, async (req, res) => {
     }
 });
 
-// Clear All Projects API (Admin)
+// Clear All Projects API (Admin only)
 router.post(clearPaths, requireMutatingAuth, async (req, res) => {
+    const role = String(req.session?.user_role || '').toLowerCase();
+    if (role !== 'admin') {
+        return sendJsonResponse(res, "error", "Forbidden: Administrator access required.", null, 403);
+    }
+
     try {
         await db.query('DELETE FROM tasks WHERE project_id IS NOT NULL').catch(() => {});
         await db.query('DELETE FROM projects');

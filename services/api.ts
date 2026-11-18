@@ -206,6 +206,20 @@ function handleOfflineFallback(endpoint: string, options: RequestInit = {}): any
         return { status: 'success', message: 'Project updated.' };
     }
 
+    if (endpoint.startsWith('/projects/delete')) {
+        store.projects = (store.projects || []).filter((p: any) => String(p.id) !== String(body.id));
+        store.tasks = (store.tasks || []).filter((t: any) => String(t.project_id) !== String(body.id));
+        saveFallbackStore(store);
+        return { status: 'success', message: 'Project deleted successfully.' };
+    }
+
+    if (endpoint.startsWith('/projects/clear')) {
+        store.projects = [];
+        store.tasks = (store.tasks || []).filter((t: any) => !t.project_id);
+        saveFallbackStore(store);
+        return { status: 'success', message: 'All client projects cleared.' };
+    }
+
     if (endpoint.startsWith('/tasks/list')) {
         return { status: 'success', message: 'Tasks synchronized.', data: store.tasks };
     }
