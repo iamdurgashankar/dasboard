@@ -46,7 +46,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
       label: 'Client Inquiries',
       icon: 'fa-envelope-open-text',
       path: '/contacts',
-      tint: 'from-[#30D158] to-[#248A3D]',
+      tint: 'from-[#6B63F2] to-[#4e45e1]',
       group: 'Management'
     },
     {
@@ -54,7 +54,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
       label: 'Editorial Studio',
       icon: 'fa-pen-nib',
       path: '/blogs',
-      tint: 'from-[#FF375F] to-[#D70015]',
+      tint: 'from-[#6B63F2] to-[#4139BF]',
       group: 'Management'
     },
     {
@@ -62,7 +62,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
       label: 'Access & Users',
       icon: 'fa-user-shield',
       path: '/users',
-      tint: 'from-[#5E5CE6] to-[#3634A3]',
+      tint: 'from-[#6B63F2] to-[#4e45e1]',
       group: 'Management'
     },
     {
@@ -70,7 +70,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
       label: 'Team Velocity',
       icon: 'fa-users',
       path: '/team',
-      tint: 'from-[#BF5AF2] to-[#8944AB]',
+      tint: 'from-[#6B63F2] to-[#4139BF]',
       group: 'Management'
     },
   ];
@@ -152,7 +152,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
             title="Collapse Sidebar"
             className="w-7 h-7 rounded-lg text-[var(--apple-text-tertiary)] hover:text-[var(--apple-text-primary)] hover:bg-[var(--apple-surface-subcard-hover)] flex items-center justify-center transition-colors shrink-0"
           >
-            <i className="fas fa-table-columns text-xs"></i>
+            <i className="fas fa-angles-left text-xs"></i>
           </button>
         )}
       </div>
@@ -256,7 +256,7 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
             onClick={() => setIsOpen(true)}
             className="group relative w-full py-2.5 rounded-[11px] text-[var(--apple-text-tertiary)] hover:text-[var(--apple-text-primary)] hover:bg-[var(--apple-surface-subcard-hover)] flex items-center justify-center transition-colors"
           >
-            <i className="fas fa-chevron-right text-xs"></i>
+            <i className="fas fa-angles-right text-xs"></i>
             {renderTooltip('Expand Sidebar', `${userRole} · Verified`)}
           </button>
         )}

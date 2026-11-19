@@ -15,6 +15,12 @@ const ROLE_DETAILS: Record<UserRole, { icon: string; color: string; desc: string
     bg: 'bg-[#4e45e1]/12',
     desc: 'Access to Client Projects, DI AI, Editorial Studio, Client Inquiries, and Team Velocity.'
   },
+  Editor: {
+    icon: 'fa-pen-nib',
+    color: 'text-[#AF52DE]',
+    bg: 'bg-[#AF52DE]/12',
+    desc: 'Access to Overview, Client Projects, DI AI, and Blog Management.'
+  },
   Viewer: {
     icon: 'fa-eye',
     color: 'text-[#248A3D] dark:text-[#30D158]',
@@ -321,6 +327,7 @@ const UserManagement: React.FC = () => {
                               className="apple-input h-8 px-2.5 text-[12px] font-medium rounded-[9px]"
                             >
                               <option value="Developer">Developer</option>
+                              <option value="Editor">Editor</option>
                               <option value="Viewer">Viewer</option>
                               <option value="Admin">Admin</option>
                             </select>
@@ -508,7 +515,7 @@ const UserManagement: React.FC = () => {
                   Assigned Role
                 </label>
                 <div className="grid grid-cols-1 gap-2">
-                  {(['Admin', 'Developer', 'Viewer'] as UserRole[]).map((role) => {
+                  {(['Admin', 'Developer', 'Editor', 'Viewer'] as UserRole[]).map((role) => {
                     const detail = ROLE_DETAILS[role];
                     const isSelected = formData.role === role;
                     return (

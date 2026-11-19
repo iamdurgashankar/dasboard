@@ -15,7 +15,8 @@ const TOKEN_SECRET =
 export function normalizeRole(role) {
     const r = String(role || '').trim().toLowerCase();
     if (r === 'admin') return 'Admin';
-    if (r === 'developer' || r === 'editor') return 'Developer';
+    if (r === 'developer') return 'Developer';
+    if (r === 'editor') return 'Editor';
     if (r === 'viewer' || r === 'user') return 'Viewer';
     return 'Admin';
 }

@@ -17,7 +17,8 @@ import { DashboardTab, UserRole, ROLE_PERMISSIONS, User } from './types';
 function normalizeUserRole(role?: string): UserRole {
   const r = String(role || '').trim().toLowerCase();
   if (r === 'admin') return 'Admin';
-  if (r === 'developer' || r === 'editor') return 'Developer';
+  if (r === 'developer') return 'Developer';
+  if (r === 'editor') return 'Editor';
   if (r === 'viewer' || r === 'user') return 'Viewer';
   return 'Admin';
 }
@@ -44,6 +45,14 @@ const AppContent = () => {
   const [activeTab, setActiveTab] = useState<DashboardTab>(DashboardTab.OVERVIEW);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [baseRole, setBaseRole] = useState<UserRole | null>(() => {
+    try {
+      const saved = localStorage.getItem('devinquire_base_role');
+      return saved ? normalizeUserRole(saved) : null;
+    } catch {
+      return null;
+    }
+  });
 
   // Default to Apple Light Mode ('light') unless user explicitly toggled to 'dark'
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -80,7 +89,22 @@ const AppContent = () => {
       try {
         const parsed = JSON.parse(savedUser);
         if (parsed && parsed.email) {
-          setCurrentUser({ ...parsed, role: normalizeUserRole(parsed.role) });
+          const normalized = normalizeUserRole(parsed.role);
+          setCurrentUser({ ...parsed, role: normalized });
+          if (!localStorage.getItem('devinquire_base_role')) {
+            setBaseRole(normalized);
+            localStorage.setItem('devinquire_base_role', normalized);
+          }
+          api.auth.me().then((meRes: any) => {
+            if (meRes?.status === 'success' && meRes.data?.email) {
+              const serverRole = normalizeUserRole(meRes.data.role);
+              const syncedUser: User = { ...meRes.data, role: serverRole };
+              setCurrentUser(syncedUser);
+              setBaseRole(serverRole);
+              localStorage.setItem('devinquire_user', JSON.stringify(syncedUser));
+              localStorage.setItem('devinquire_base_role', serverRole);
+            }
+          }).catch(() => {});
         }
       } catch {
         localStorage.removeItem('devinquire_user');
@@ -91,13 +115,17 @@ const AppContent = () => {
   const handleLogin = (user: User) => {
     const normalizedUser: User = { ...user, role: normalizeUserRole(user.role) };
     setCurrentUser(normalizedUser);
+    setBaseRole(normalizedUser.role);
     localStorage.setItem('devinquire_user', JSON.stringify(normalizedUser));
+    localStorage.setItem('devinquire_base_role', normalizedUser.role);
   };
 
   const handleLogout = () => {
     api.auth.logout().catch(() => {});
     setCurrentUser(null);
+    setBaseRole(null);
     localStorage.removeItem('devinquire_user');
+    localStorage.removeItem('devinquire_base_role');
     localStorage.removeItem('di_csrf_token');
   };
 
@@ -139,6 +167,7 @@ const AppContent = () => {
           toggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
           currentUser={currentUser}
           setCurrentUserRole={handleRoleChange}
+          canSwitchRole={baseRole === 'Admin' || currentUser.role === 'Admin'}
           onLogout={handleLogout}
           onUpdateUser={handleUpdateUser}
           theme={theme}

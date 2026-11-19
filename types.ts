@@ -124,7 +124,7 @@ export interface Task {
   comments?: ProjectComment[];
 }
 
-export type UserRole = 'Admin' | 'Developer' | 'Viewer';
+export type UserRole = 'Admin' | 'Developer' | 'Editor' | 'Viewer';
 
 export interface User {
   id: string;
@@ -165,6 +165,12 @@ export const ROLE_PERMISSIONS: Record<UserRole, DashboardTab[]> = {
     DashboardTab.BLOGS,
     DashboardTab.TEAM,
     DashboardTab.CONTACTS
+  ],
+  Editor: [
+    DashboardTab.OVERVIEW,
+    DashboardTab.PROJECTS,
+    DashboardTab.INQUIRE,
+    DashboardTab.BLOGS
   ],
   Viewer: [
     DashboardTab.OVERVIEW,

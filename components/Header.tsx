@@ -8,6 +8,7 @@ interface HeaderProps {
   toggleSidebar: () => void;
   currentUser: User;
   setCurrentUserRole: (role: UserRole) => void;
+  canSwitchRole?: boolean;
   onLogout: () => void;
   onUpdateUser: (data: Partial<User>) => void;
   theme: 'light' | 'dark';
@@ -29,6 +30,7 @@ const Header: React.FC<HeaderProps> = ({
   toggleSidebar,
   currentUser,
   setCurrentUserRole,
+  canSwitchRole,
   onLogout,
   onUpdateUser,
   theme,
@@ -327,19 +329,22 @@ const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        {/* Role Segmented Switcher */}
-        <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 apple-subcard rounded-[10px]">
-          <span className="text-[11px] font-medium text-[var(--apple-text-tertiary)]">Access:</span>
-          <select
-            value={currentUser.role}
-            onChange={(e) => setCurrentUserRole(e.target.value as UserRole)}
-            className="bg-transparent text-[12px] font-semibold text-[var(--apple-blue)] outline-none border-none cursor-pointer"
-          >
-            <option value="Admin">Admin</option>
-            <option value="Developer">Developer</option>
-            <option value="Viewer">Viewer</option>
-          </select>
-        </div>
+        {/* Role Segmented Switcher (Admin Only) */}
+        {(canSwitchRole ?? currentUser.role === 'Admin') && (
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 apple-subcard rounded-[10px]">
+            <span className="text-[11px] font-medium text-[var(--apple-text-tertiary)]">Access:</span>
+            <select
+              value={currentUser.role}
+              onChange={(e) => setCurrentUserRole(e.target.value as UserRole)}
+              className="bg-transparent text-[12px] font-semibold text-[var(--apple-blue)] outline-none border-none cursor-pointer"
+            >
+              <option value="Admin">Admin</option>
+              <option value="Developer">Developer</option>
+              <option value="Editor">Editor</option>
+              <option value="Viewer">Viewer</option>
+            </select>
+          </div>
+        )}
 
         {/* Apple Appearance (Light / Dark Mode) Toggle Pill */}
         <button

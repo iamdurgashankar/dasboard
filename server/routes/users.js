@@ -32,7 +32,7 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
         }
         const rawPassword = password && String(password).trim() ? String(password).trim() : 'DevInquire2026!';
         const hashedPassword = await bcrypt.hash(rawPassword, 10);
-        const assignedRole = ['Admin', 'Developer', 'Viewer'].includes(role) ? role : 'Developer';
+        const assignedRole = ['Admin', 'Developer', 'Editor', 'Viewer'].includes(role) ? role : 'Developer';
 
         const insertRes = await db.query(
             'INSERT INTO users (email, password, name, role, status, avatar) VALUES ($1, $2, $3, $4::user_role, $5::user_status, $6) RETURNING id',
