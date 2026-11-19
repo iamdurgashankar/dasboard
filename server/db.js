@@ -213,13 +213,15 @@ function executeEmbeddedQuery(text, params = []) {
 
   if (qLower.startsWith("insert into users")) {
     const id = nextId(store.users);
+    const defaultRole = qLower.includes("'developer'") ? "Developer" : qLower.includes("'viewer'") ? "Viewer" : "Admin";
+    const defaultStatus = qLower.includes("'pending'") ? "pending" : "active";
     const newUser = {
       id,
       email: params[0],
       password: params[1],
       name: params[2] || "DevInquire Admin",
-      role: params[3] || "Admin",
-      status: params[4] || "active",
+      role: params[3] || defaultRole,
+      status: params[4] || defaultStatus,
       avatar: params[5] || null,
       join_date: now,
       created_at: now,

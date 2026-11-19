@@ -53,6 +53,7 @@ const UserManagement: React.FC = () => {
   });
   const [userPassword, setUserPassword] = useState('');
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [selectedApprovalRoles, setSelectedApprovalRoles] = useState<Record<string, User['role']>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -96,9 +97,10 @@ const UserManagement: React.FC = () => {
     return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=4e45e1&color=fff&bold=true`;
   };
 
-  const handleApprove = async (id: string) => {
+  const handleApprove = async (id: string, role?: User['role']) => {
     try {
-      await api.users.update({ id, status: 'active' });
+      const assignedRole = role || selectedApprovalRoles[id] || 'Developer';
+      await api.users.update({ id, status: 'active', role: assignedRole });
       fetchUsers();
     } catch (err) {
       console.error('Approval error:', err);
@@ -306,9 +308,29 @@ const UserManagement: React.FC = () => {
                     <td className="px-6 py-4 text-right">
                       <div className="flex justify-end gap-2">
                         {user.status === 'pending' ? (
-                          <>
+                          <div className="flex items-center justify-end gap-2">
+                            <select
+                              value={selectedApprovalRoles[user.id] || user.role || 'Developer'}
+                              onChange={(e) =>
+                                setSelectedApprovalRoles((prev) => ({
+                                  ...prev,
+                                  [user.id]: e.target.value as User['role'],
+                                }))
+                              }
+                              aria-label="Select role for approval"
+                              className="apple-input h-8 px-2.5 text-[12px] font-medium rounded-[9px]"
+                            >
+                              <option value="Developer">Developer</option>
+                              <option value="Viewer">Viewer</option>
+                              <option value="Admin">Admin</option>
+                            </select>
                             <button
-                              onClick={() => handleApprove(user.id)}
+                              onClick={() =>
+                                handleApprove(
+                                  user.id,
+                                  selectedApprovalRoles[user.id] || user.role || 'Developer'
+                                )
+                              }
                               className="px-3 py-1.5 rounded-[9px] bg-[#28CD41] text-white text-[12px] font-semibold hover:opacity-90"
                             >
                               Approve
@@ -319,7 +341,7 @@ const UserManagement: React.FC = () => {
                             >
                               Reject
                             </button>
-                          </>
+                          </div>
                         ) : (
                           <>
                             <button

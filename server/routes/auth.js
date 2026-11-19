@@ -127,9 +127,9 @@ router.post(registerPaths, async (req, res) => {
         const hashedPass = await bcrypt.hash(password, 10);
         const insertRes = await db.query(
             `INSERT INTO users (email, password, name, role, status)
-             VALUES ($1, $2, $3, 'Developer'::user_role, 'pending'::user_status)
+             VALUES ($1, $2, $3, $4::user_role, $5::user_status)
              RETURNING id`,
-            [normalizedEmail, hashedPass, String(name).trim()]
+            [normalizedEmail, hashedPass, String(name).trim(), 'Developer', 'pending']
         );
         const userId = insertRes.rows?.[0]?.id || `req-${Date.now()}`;
 
