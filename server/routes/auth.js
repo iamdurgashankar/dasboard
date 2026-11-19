@@ -57,7 +57,8 @@ router.post(loginPaths, async (req, res) => {
                 : false;
 
             if (isMatch) {
-                const status = user.status || (user.is_active === 0 ? 'pending' : 'active');
+                const rawStatus = String(user.status || '').trim().toLowerCase();
+                const status = rawStatus || (user.is_active === 1 ? 'active' : 'pending');
                 if (status !== 'active') {
                     return sendJsonResponse(res, "error", "Account pending approval.", null, 403);
                 }
@@ -132,6 +133,17 @@ router.post(registerPaths, async (req, res) => {
             [normalizedEmail, hashedPass, String(name).trim(), 'Developer', 'pending']
         );
         const userId = insertRes.rows?.[0]?.id || `req-${Date.now()}`;
+
+        if (insertRes.rows?.[0]?.id) {
+            await db.query(
+                "UPDATE users SET role = $1, status = $2 WHERE id = $3",
+                ['Developer', 'pending', userId]
+            ).catch(() => {});
+            await db.query(
+                "UPDATE users SET is_active = 0 WHERE id = $1",
+                [userId]
+            ).catch(() => {});
+        }
 
         await createNotification(
             null,

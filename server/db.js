@@ -1192,7 +1192,9 @@ export const db = {
       if (useMySQL && mysqlPool && !useEmbeddedStore) {
         const alterColumns = [
           "ALTER TABLE users ADD COLUMN password VARCHAR(255) DEFAULT NULL",
-          "ALTER TABLE users ADD COLUMN status VARCHAR(50) DEFAULT 'active'",
+          "ALTER TABLE users ADD COLUMN status VARCHAR(50) DEFAULT 'pending'",
+          "ALTER TABLE users MODIFY COLUMN role VARCHAR(50) DEFAULT 'Developer'",
+          "ALTER TABLE users MODIFY COLUMN status VARCHAR(50) DEFAULT 'pending'",
           "ALTER TABLE users ADD COLUMN avatar VARCHAR(255) DEFAULT NULL",
           "ALTER TABLE users ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
           "ALTER TABLE projects ADD COLUMN last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP",

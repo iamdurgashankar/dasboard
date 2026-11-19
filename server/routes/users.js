@@ -59,11 +59,16 @@ router.get(listPaths, requireAuth, async (req, res) => {
         `;
         const result = await db.query(query);
         
-        // Map active_tasks count to number
-        const users = result.rows.map(user => ({
-            ...user,
-            active_tasks: parseInt(user.active_tasks, 10)
-        }));
+        // Map active_tasks count to number and normalize status
+        const users = result.rows.map(user => {
+            const rawStatus = String(user.status || '').trim().toLowerCase();
+            const normalizedStatus = rawStatus || (user.is_active === 1 ? 'active' : 'pending');
+            return {
+                ...user,
+                status: normalizedStatus,
+                active_tasks: parseInt(user.active_tasks, 10) || 0
+            };
+        });
 
         return sendJsonResponse(res, "success", "User directory retrieved.", users);
     } catch (err) {
@@ -127,6 +132,11 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
         params.push(id);
         const query = `UPDATE users SET ${fields.join(', ')} WHERE id = $${paramCount}`;
         await db.query(query, params);
+
+        if (status !== undefined && status !== '') {
+            const activeFlag = String(status).toLowerCase() === 'active' ? 1 : 0;
+            await db.query('UPDATE users SET is_active = $1 WHERE id = $2', [activeFlag, id]).catch(() => {});
+        }
 
         // Notify User of Changes
         if (status && status !== existingUser.status) {
