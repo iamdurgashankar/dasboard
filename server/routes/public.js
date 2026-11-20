@@ -287,6 +287,16 @@ router.get(['/quotation', '/quotation.php'], async (req, res) => {
         } catch {
             parsed = {};
         }
+
+        if (parsed.clientDecision === 'agreed' || parsed.clientDecision === 'rejected') {
+            return sendJsonResponse(
+                res,
+                "error",
+                "This quotation response is already finalized and cannot be changed. Please request a new quotation.",
+                null,
+                409
+            );
+        }
         return sendJsonResponse(res, "success", "Quotation retrieved.", {
             ...parsed,
             id: String(row.id),
@@ -298,6 +308,81 @@ router.get(['/quotation', '/quotation.php'], async (req, res) => {
     } catch (err) {
         console.error("Public Quotation API Error:", err);
         return sendJsonResponse(res, "error", "Failed to retrieve quotation.", null, 500);
+    }
+});
+
+// Public Quotation Client Response API (Agreed / Rejected)
+router.post(['/quotation/respond', '/quotation/respond.php'], async (req, res) => {
+    const { slug: slugParam, decision } = req.body || {};
+    const cleanSlug = slugifyClient(slugParam || '');
+    const normalizedDecision = String(decision || '').toLowerCase().trim();
+
+    if (!slugParam || !cleanSlug) {
+        return sendJsonResponse(res, "error", "Quotation slug is required.", null, 400);
+    }
+    if (normalizedDecision !== 'agreed' && normalizedDecision !== 'rejected') {
+        return sendJsonResponse(res, "error", "Decision must be 'agreed' or 'rejected'.", null, 400);
+    }
+
+    try {
+        await ensureQuotationsTable();
+        const result = await db.query(
+            'SELECT id, slug, quotation_no, client_name, payload, created_at, updated_at FROM quotations WHERE slug = $1 LIMIT 1',
+            [cleanSlug]
+        );
+        const row = result.rows?.[0];
+        if (!row) {
+            return sendJsonResponse(res, "error", "Quotation not found.", null, 404);
+        }
+
+        let parsed = {};
+        try {
+            parsed = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload || {};
+        } catch {
+            parsed = {};
+        }
+
+        if (parsed.clientDecision === 'agreed' || parsed.clientDecision === 'rejected') {
+            return sendJsonResponse(
+                res,
+                "error",
+                "This quotation response is already finalized and cannot be changed. Please request a new quotation.",
+                null,
+                409
+            );
+        }
+
+        const nowIso = new Date().toISOString();
+        const updatedPayload = {
+            ...parsed,
+            slug: row.slug,
+            quotationNo: parsed.quotationNo || row.quotation_no,
+            clientName: parsed.clientName || row.client_name,
+            clientDecision: normalizedDecision,
+            clientDecisionAt: nowIso,
+            updatedAt: nowIso,
+        };
+
+        await db.query(
+            'UPDATE quotations SET quotation_no = $1, client_name = $2, payload = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4',
+            [updatedPayload.quotationNo, updatedPayload.clientName, JSON.stringify(updatedPayload), row.id]
+        );
+
+        await createNotification(
+            null,
+            normalizedDecision === 'agreed' ? 'success' : 'warning',
+            `Quotation ${normalizedDecision === 'agreed' ? 'Agreed' : 'Rejected'}`,
+            `${updatedPayload.clientName} (${updatedPayload.quotationNo}) marked as ${normalizedDecision}.`,
+            '/quotations'
+        ).catch(() => {});
+
+        return sendJsonResponse(res, "success", `Quotation marked as ${normalizedDecision}.`, {
+            ...updatedPayload,
+            id: String(row.id),
+        });
+    } catch (err) {
+        console.error("Public Quotation Response Error:", err);
+        return sendJsonResponse(res, "error", "Failed to save quotation response.", null, 500);
     }
 });
 

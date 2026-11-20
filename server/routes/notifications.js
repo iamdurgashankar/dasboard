@@ -11,6 +11,7 @@ const router = express.Router();
 const listPaths = ['/list', '/list.php'];
 const markReadPaths = ['/mark_read', '/mark_read.php'];
 const markAllReadPaths = ['/mark_all_read', '/mark_all_read.php'];
+const clearAllPaths = ['/clear_all', '/clear_all.php'];
 
 // List Notifications API
 router.get(listPaths, requireAuth, async (req, res) => {
@@ -70,6 +71,21 @@ router.post(markAllReadPaths, requireAuth, async (req, res) => {
     } catch (err) {
         console.error("Mark All Read API Error:", err);
         return sendJsonResponse(res, "error", "Internal orchestration fault.", null, 500);
+    }
+});
+
+// Clear All Notifications API
+router.post(clearAllPaths, requireAuth, async (req, res) => {
+    const userId = req.session.user_id;
+
+    try {
+        const query = 'DELETE FROM notifications WHERE user_id = $1 OR user_id IS NULL';
+        await db.query(query, [userId]);
+
+        return sendJsonResponse(res, "success", "All notifications cleared.", null);
+    } catch (err) {
+        console.error("Clear All Notifications API Error:", err);
+        return sendJsonResponse(res, "error", "Failed to clear notifications.", null, 500);
     }
 });
 

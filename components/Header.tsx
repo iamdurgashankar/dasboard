@@ -152,12 +152,12 @@ const Header: React.FC<HeaderProps> = ({
     }
   };
 
-  const handleMarkAllRead = async () => {
+  const handleClearAll = async () => {
     try {
-      await api.notifications.markAllRead();
-      setNotifications(prev => prev.map(n => ({ ...n, isRead: true })));
+      await api.notifications.clearAll();
+      setNotifications([]);
     } catch (err) {
-      console.error("Mark All Read Error:", err);
+      console.error("Clear All Notifications Error:", err);
     }
   };
 
@@ -395,9 +395,9 @@ const Header: React.FC<HeaderProps> = ({
                 <h4 className="text-[14px] font-semibold text-[var(--apple-text-primary)]">Notifications</h4>
                 <p className="text-[11px] text-[var(--apple-text-tertiary)]">{unreadCount} unread updates</p>
               </div>
-              {unreadCount > 0 && (
+              {notifications.length > 0 && (
                 <button
-                  onClick={handleMarkAllRead}
+                  onClick={handleClearAll}
                   className="text-[12px] font-medium text-[var(--apple-blue)] hover:opacity-80 px-2.5 py-1 rounded-full bg-[#4e45e1]/10 transition-opacity"
                 >
                   Clear All

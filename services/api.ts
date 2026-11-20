@@ -495,6 +495,12 @@ function handleOfflineFallback(endpoint: string, options: RequestInit = {}): any
         return { status: 'success', message: 'All signals synchronized.' };
     }
 
+    if (endpoint.startsWith('/notifications/clear_all')) {
+        store.notifications = [];
+        saveFallbackStore(store);
+        return { status: 'success', message: 'All notifications cleared.' };
+    }
+
     return { status: 'success', message: 'OK', data: [] };
 }
 
@@ -699,7 +705,8 @@ export const api = {
             method: 'POST',
             body: JSON.stringify({ id })
         }),
-        markAllRead: () => api.fetch('/notifications/mark_all_read', { method: 'POST' })
+        markAllRead: () => api.fetch('/notifications/mark_all_read', { method: 'POST' }),
+        clearAll: () => api.fetch('/notifications/clear_all', { method: 'POST' })
     },
 
     quotations: {

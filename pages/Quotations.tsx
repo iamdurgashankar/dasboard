@@ -35,6 +35,8 @@ interface QuotationData {
   note: string;
   signatoryName: string;
   clientSignatoryLabel: string;
+  clientDecision?: 'agreed' | 'rejected' | '';
+  clientDecisionAt?: string;
   updatedAt: string;
 }
 
@@ -99,7 +101,7 @@ const createDefaultQuotation = (): QuotationData => ({
   ],
   note: 'This is a quotation and not a tax invoice. The final invoice will be issued after confirmation of the service and payment details.',
   signatoryName: 'Durga Shankar Das Mangaraj',
-  clientSignatoryLabel: '[Name / Signature / Date]',
+  clientSignatoryLabel: '',
   updatedAt: new Date().toISOString(),
 });
 
@@ -458,7 +460,18 @@ function buildStandaloneHtml(q: QuotationData, subtotal: number, taxAmount: numb
 
   <div class="sign">
     <div>For ${escapeHtml(q.preparedByName)}<br><br><strong>${escapeHtml(q.signatoryName)}</strong></div>
-    <div>Accepted by ${escapeHtml(q.clientName || 'Client')}<br><br><strong>${escapeHtml(q.clientSignatoryLabel)}</strong></div>
+    <div>
+      Accepted by ${escapeHtml(q.clientName || 'Client')}
+      ${
+        q.clientDecision
+          ? `<div style="margin-top:8px;display:inline-block;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;${
+              q.clientDecision === 'agreed'
+                ? 'background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;'
+                : 'background:#fff1f2;color:#be123c;border:1px solid #fecdd3;'
+            }">${q.clientDecision === 'agreed' ? 'Agreed' : 'Rejected'}</div>`
+          : '<br><br>'
+      }
+    </div>
   </div>
 
   <footer>Thank you for choosing ${escapeHtml(q.preparedByName)}.</footer>
@@ -500,15 +513,48 @@ const Quotations: React.FC = () => {
       : `https://devinquire.com/quotation/${slug}`;
   };
 
+  const refreshSavedQuotations = async () => {
+    try {
+      const res: any = await api.quotations.list();
+      if (res?.status === 'success' && Array.isArray(res.data)) {
+        setSavedList(res.data);
+        setQuotation((current) => {
+          const match = res.data.find(
+            (item: QuotationData) =>
+              (current.slug && item.slug === current.slug) || item.id === current.id
+          );
+          if (
+            match &&
+            (match.clientDecision !== current.clientDecision ||
+              match.clientDecisionAt !== current.clientDecisionAt)
+          ) {
+            return {
+              ...current,
+              clientDecision: match.clientDecision,
+              clientDecisionAt: match.clientDecisionAt,
+              updatedAt: match.updatedAt || current.updatedAt,
+            };
+          }
+          return current;
+        });
+      }
+    } catch {
+      // ignore background refresh error
+    }
+  };
+
   useEffect(() => {
-    api.quotations
-      .list()
-      .then((res: any) => {
-        if (res?.status === 'success' && Array.isArray(res.data) && res.data.length > 0) {
-          setSavedList(res.data);
-        }
-      })
-      .catch(() => {});
+    refreshSavedQuotations();
+    const onFocus = () => refreshSavedQuotations();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') refreshSavedQuotations();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
   }, []);
 
   useEffect(() => {
@@ -812,10 +858,21 @@ const Quotations: React.FC = () => {
                   onClick={() => {
                     setQuotation(saved);
                     if (saved.slug) setPublishedUrl(getPublicQuotationUrl(saved.slug));
+                    refreshSavedQuotations();
                   }}
-                  className="hover:underline"
+                  className="hover:underline inline-flex items-center gap-1.5"
                 >
-                  {saved.quotationNo} · {saved.clientName || 'Client'}
+                  <span>{saved.quotationNo} · {saved.clientName || 'Client'}</span>
+                  {saved.clientDecision === 'agreed' && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-emerald-500/15 text-emerald-600 border border-emerald-500/30">
+                      Agreed
+                    </span>
+                  )}
+                  {saved.clientDecision === 'rejected' && (
+                    <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold uppercase bg-rose-500/15 text-rose-600 border border-rose-500/30">
+                      Rejected
+                    </span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -1474,10 +1531,65 @@ const Quotations: React.FC = () => {
                   <strong className="text-[#172033]">{quotation.signatoryName}</strong>
                 </div>
                 <div className="border-t border-[#aeb6c5] pt-2.5 text-[#667085] text-[12px]">
-                  Accepted by {quotation.clientName || 'Client'}
-                  <br />
-                  <br />
-                  <strong className="text-[#172033]">{quotation.clientSignatoryLabel}</strong>
+                  <div>Accepted by {quotation.clientName || 'Client'}</div>
+
+                  {!quotation.clientDecision ? (
+                    <div className="mt-2.5 flex flex-wrap items-center gap-2 print:hidden">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setQuotation((prev) => ({
+                            ...prev,
+                            clientDecision: 'agreed',
+                            clientDecisionAt: new Date().toISOString(),
+                          }))
+                        }
+                        className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-semibold border transition cursor-pointer bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                      >
+                        Agreed
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setQuotation((prev) => ({
+                            ...prev,
+                            clientDecision: 'rejected',
+                            clientDecisionAt: new Date().toISOString(),
+                          }))
+                        }
+                        className="inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-semibold border transition cursor-pointer bg-white text-rose-700 border-rose-300 hover:bg-rose-50"
+                      >
+                        Rejected
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-2">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase tracking-[0.4px] ${
+                            quotation.clientDecision === 'agreed'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : 'bg-rose-50 text-rose-700 border border-rose-200'
+                          }`}
+                        >
+                          {quotation.clientDecision === 'agreed' ? 'Agreed' : 'Rejected'}
+                        </span>
+                        {quotation.clientDecisionAt && (
+                          <span className="text-[11px] text-[#667085]">
+                            on{' '}
+                            {new Date(quotation.clientDecisionAt).toLocaleDateString('en-GB', {
+                              day: '2-digit',
+                              month: 'short',
+                              year: 'numeric',
+                            })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[11px] text-[#667085] print:hidden">
+                        Response locked. Request a new quotation for changes.
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -810,6 +810,15 @@ function executeEmbeddedQuery(text, params = []) {
     return { rows: [], rowCount: 1 };
   }
 
+  if (qLower.startsWith("delete from notifications")) {
+    const uid = Number(params[0]);
+    store.notifications = store.notifications.filter(
+      (n) => n.user_id !== null && Number(n.user_id) !== uid,
+    );
+    saveEmbeddedStore();
+    return { rows: [], rowCount: 1 };
+  }
+
   return { rows: [], rowCount: 0 };
 }
 
