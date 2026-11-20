@@ -13,7 +13,7 @@ interface BlogConfig {
 }
 
 const DEFAULT_BLOG_CONFIG: BlogConfig = {
-  siteUrl: 'http://localhost:8000',
+  siteUrl: 'https://devinquire.com',
   defaultAuthor: 'DevInquire Editorial',
   defaultStatus: 'draft',
   autoSyncOnPublish: true,
@@ -482,7 +482,11 @@ const BlogManagement: React.FC = () => {
             Editorial Studio
           </h1>
           <p className="text-[14px] text-[var(--apple-text-secondary)] mt-0.5 max-w-2xl">
-            Draft, configure categories & SEO settings, and publish engineering articles to {blogConfig.siteUrl}.
+            Draft, curate tech news, configure categories &amp; SEO settings, and publish articles directly to{' '}
+            {blogConfig.siteUrl && !blogConfig.siteUrl.includes('localhost')
+              ? blogConfig.siteUrl.replace(/^https?:\/\//, '')
+              : 'devinquire.com'}
+            .
           </p>
         </div>
 

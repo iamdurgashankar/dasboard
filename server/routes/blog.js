@@ -462,7 +462,7 @@ async function triggerMainSiteSync() {
   if (blogConfig.autoSyncOnPublish === false) {
     return false;
   }
-  const baseSite = (blogConfig.siteUrl || "http://localhost:8000").replace(/\/$/, "");
+  const baseSite = (blogConfig.siteUrl || "https://devinquire.com").replace(/\/$/, "");
   const token = process.env.SYNC_WEBHOOK_SECRET || "devinquire-secret-token-123";
   const webhookUrl =
     process.env.MAINSITE_SYNC_WEBHOOK_URL ||

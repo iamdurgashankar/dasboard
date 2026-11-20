@@ -68,7 +68,7 @@ function getDefaultSettings() {
       slaHours: 24,
     },
     blog_config: {
-      siteUrl: process.env.MAIN_SITE_URL || "http://localhost:8000",
+      siteUrl: process.env.MAIN_SITE_URL || "https://devinquire.com",
       defaultAuthor: "DevInquire Editorial",
       defaultStatus: "draft",
       autoSyncOnPublish: true,
