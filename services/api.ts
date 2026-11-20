@@ -655,7 +655,11 @@ export const api = {
         delete: (id: string | number) => api.fetch('/blog/delete', { method: 'POST', body: JSON.stringify({ id }) }),
         sync: (id: string) => api.fetch('/blog/sync', { method: 'POST', body: JSON.stringify({ id }) }),
         getConfig: () => api.fetch('/blog/config'),
-        updateConfig: (data: any) => api.fetch('/blog/config', { method: 'POST', body: JSON.stringify(data) })
+        updateConfig: (data: any) => api.fetch('/blog/config', { method: 'POST', body: JSON.stringify(data) }),
+        getAutomationStatus: () => api.fetch('/blog/automation/status'),
+        saveAutomationConfig: (data: any) => api.fetch('/blog/automation/config', { method: 'POST', body: JSON.stringify(data) }),
+        runAutomationNow: (options?: { maxPerRun?: number; autoPublish?: boolean; categoryOverride?: string }) =>
+            api.fetch('/blog/automation/run', { method: 'POST', body: JSON.stringify(options || {}) })
     },
 
     users: {

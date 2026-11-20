@@ -40,6 +40,32 @@ const BlogManagement: React.FC = () => {
   const [newCategoryInput, setNewCategoryInput] = useState('');
   const [isSavingConfig, setIsSavingConfig] = useState(false);
 
+  // daily.dev Automation Workflow state
+  const [showAutomationPanel, setShowAutomationPanel] = useState(false);
+  const [isRunningAutomation, setIsRunningAutomation] = useState(false);
+  const [isSavingAutomation, setIsSavingAutomation] = useState(false);
+  const [automationConfig, setAutomationConfig] = useState<{
+    enabled: boolean;
+    intervalMinutes: number;
+    autoPublish: boolean;
+    maxPerRun: number;
+    categoryOverride: string;
+    lastRunAt: string | null;
+    lastImportedCount: number;
+    lastSkippedCount: number;
+    lastError: string | null;
+  }>({
+    enabled: false,
+    intervalMinutes: 360,
+    autoPublish: true,
+    maxPerRun: 10,
+    categoryOverride: 'Auto',
+    lastRunAt: null,
+    lastImportedCount: 0,
+    lastSkippedCount: 0,
+    lastError: null,
+  });
+
   // Filters
   const [statusFilter, setStatusFilter] = useState<'all' | 'published' | 'draft'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('All');
@@ -86,7 +112,65 @@ const BlogManagement: React.FC = () => {
   useEffect(() => {
     fetchBlogs();
     fetchBlogConfig();
+    fetchAutomationStatus();
   }, []);
+
+  const fetchAutomationStatus = async () => {
+    try {
+      const res = await api.blog.getAutomationStatus();
+      if (res.status === 'success' && res.data) {
+        setAutomationConfig((prev) => ({ ...prev, ...res.data }));
+      }
+    } catch {
+      // keep default automation config
+    }
+  };
+
+  const handleSaveAutomation = async () => {
+    setIsSavingAutomation(true);
+    try {
+      const res = await api.blog.saveAutomationConfig(automationConfig);
+      if (res.status === 'success') {
+        if (res.data) setAutomationConfig((prev) => ({ ...prev, ...res.data }));
+        showToast(
+          automationConfig.enabled
+            ? `daily.dev auto-sync enabled (every ${automationConfig.intervalMinutes / 60 >= 1 ? `${automationConfig.intervalMinutes / 60}h` : `${automationConfig.intervalMinutes}m`}).`
+            : 'daily.dev automation workflow saved.'
+        );
+      } else {
+        setError(res.message || 'Failed to save automation workflow.');
+      }
+    } catch {
+      setError('Failed to save automation workflow.');
+    } finally {
+      setIsSavingAutomation(false);
+    }
+  };
+
+  const handleRunAutomationNow = async () => {
+    setIsRunningAutomation(true);
+    setError(null);
+    try {
+      const res = await api.blog.runAutomationNow({
+        maxPerRun: automationConfig.maxPerRun,
+        autoPublish: automationConfig.autoPublish,
+        categoryOverride: automationConfig.categoryOverride,
+      });
+      if (res.status === 'success') {
+        if (res.data?.automation) {
+          setAutomationConfig((prev) => ({ ...prev, ...res.data.automation }));
+        }
+        showToast(res.message || 'Synced tech news from daily.dev.');
+        await fetchBlogs();
+      } else {
+        setError(res.message || 'Failed to pull tech news from daily.dev.');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to pull tech news from daily.dev.');
+    } finally {
+      setIsRunningAutomation(false);
+    }
+  };
 
   const fetchBlogConfig = async () => {
     try {
@@ -402,7 +486,23 @@ const BlogManagement: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center">
+        <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center flex-wrap">
+          <button
+            onClick={() => setShowAutomationPanel((prev) => !prev)}
+            className={`h-10 px-4 rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap border transition ${
+              showAutomationPanel
+                ? 'bg-[#4e45e1]/12 border-[#4e45e1]/30 text-[var(--apple-blue)]'
+                : 'apple-secondary-btn border-transparent'
+            }`}
+          >
+            <span
+              className={`w-2 h-2 rounded-full ${
+                automationConfig.enabled ? 'bg-[#28CD41]' : 'bg-[var(--apple-text-tertiary)]/50'
+              }`}
+            />
+            <i className="fas fa-bolt text-[var(--apple-blue)] text-xs shrink-0"></i>
+            <span>daily.dev Automation</span>
+          </button>
           <button
             onClick={() => setShowConfigModal(true)}
             className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
@@ -433,6 +533,163 @@ const BlogManagement: React.FC = () => {
         <div className="p-4 bg-[#FF3B30]/10 border border-[#FF3B30]/20 text-[#FF3B30] rounded-[14px] text-[13px] flex items-center gap-2.5">
           <i className="fas fa-circle-exclamation"></i>
           <span>{error}</span>
+        </div>
+      )}
+
+      {/* daily.dev Tech News Automation Workflow */}
+      {showAutomationPanel && (
+        <div className="apple-card p-5 space-y-4 border border-[#4e45e1]/20 animate-in fade-in duration-300">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <h2 className="text-[15px] font-semibold text-[var(--apple-text-primary)]">
+                  daily.dev Tech News Automation Workflow
+                </h2>
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                    automationConfig.enabled
+                      ? 'bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]'
+                      : 'bg-[var(--apple-bg-tertiary)] text-[var(--apple-text-secondary)]'
+                  }`}
+                >
+                  {automationConfig.enabled ? 'Scheduled Active' : 'Manual Mode'}
+                </span>
+              </div>
+              <p className="text-[12.5px] text-[var(--apple-text-secondary)] mt-0.5">
+                Automatically pull the latest tech news from <strong>daily.dev</strong>, map each story to your blog categories, and publish or stage as drafts (duplicates skipped automatically).
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                disabled={isSavingAutomation}
+                onClick={handleSaveAutomation}
+                className="h-9 px-3.5 apple-secondary-btn rounded-[10px] text-[12.5px] font-medium inline-flex items-center gap-2 disabled:opacity-60"
+              >
+                <i className={`fas ${isSavingAutomation ? 'fa-spinner fa-spin' : 'fa-floppy-disk'} text-xs`}></i>
+                <span>{isSavingAutomation ? 'Saving…' : 'Save Workflow'}</span>
+              </button>
+              <button
+                type="button"
+                disabled={isRunningAutomation}
+                onClick={handleRunAutomationNow}
+                className="h-9 px-4 apple-pill-btn rounded-[10px] text-[12.5px] font-semibold inline-flex items-center gap-2 disabled:opacity-60"
+              >
+                <i className={`fas ${isRunningAutomation ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-down'} text-xs badge-white`}></i>
+                <span>{isRunningAutomation ? 'Pulling from daily.dev…' : 'Pull & Post Now'}</span>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+            <label className="apple-subcard p-3 rounded-[12px] space-y-1.5 block">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                Category Mapping
+              </span>
+              <select
+                value={automationConfig.categoryOverride}
+                onChange={(e) =>
+                  setAutomationConfig((prev) => ({ ...prev, categoryOverride: e.target.value }))
+                }
+                className="w-full apple-input px-2.5 py-1.5 text-[13px] rounded-[8px]"
+              >
+                <option value="Auto">Auto-Categorize by Topic</option>
+                {blogConfig.categories.map((cat) => (
+                  <option key={cat} value={cat}>
+                    Force: {cat}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="apple-subcard p-3 rounded-[12px] space-y-1.5 block">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                Articles Per Pull
+              </span>
+              <select
+                value={automationConfig.maxPerRun}
+                onChange={(e) =>
+                  setAutomationConfig((prev) => ({ ...prev, maxPerRun: Number(e.target.value) }))
+                }
+                className="w-full apple-input px-2.5 py-1.5 text-[13px] rounded-[8px]"
+              >
+                <option value={5}>5 articles</option>
+                <option value={10}>10 articles</option>
+                <option value={15}>15 articles</option>
+                <option value={20}>20 articles</option>
+              </select>
+            </label>
+
+            <label className="apple-subcard p-3 rounded-[12px] space-y-1.5 block">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                Post Status
+              </span>
+              <select
+                value={automationConfig.autoPublish ? 'published' : 'draft'}
+                onChange={(e) =>
+                  setAutomationConfig((prev) => ({
+                    ...prev,
+                    autoPublish: e.target.value === 'published',
+                  }))
+                }
+                className="w-full apple-input px-2.5 py-1.5 text-[13px] rounded-[8px]"
+              >
+                <option value="published">Publish Immediately</option>
+                <option value="draft">Save as Draft for Review</option>
+              </select>
+            </label>
+
+            <div className="apple-subcard p-3 rounded-[12px] space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                  Auto-Schedule
+                </span>
+                <input
+                  type="checkbox"
+                  checked={automationConfig.enabled}
+                  onChange={(e) =>
+                    setAutomationConfig((prev) => ({ ...prev, enabled: e.target.checked }))
+                  }
+                  className="w-4 h-4 accent-[#4e45e1] cursor-pointer"
+                />
+              </div>
+              <select
+                disabled={!automationConfig.enabled}
+                value={automationConfig.intervalMinutes}
+                onChange={(e) =>
+                  setAutomationConfig((prev) => ({
+                    ...prev,
+                    intervalMinutes: Number(e.target.value),
+                  }))
+                }
+                className="w-full apple-input px-2.5 py-1.5 text-[13px] rounded-[8px] disabled:opacity-50"
+              >
+                <option value={60}>Every 1 hour</option>
+                <option value={360}>Every 6 hours</option>
+                <option value={720}>Every 12 hours</option>
+                <option value={1440}>Every 24 hours</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-[var(--apple-text-tertiary)] pt-1 border-t border-[var(--apple-border)]">
+            <div className="flex flex-wrap items-center gap-4">
+              <span>
+                <strong>Last Run:</strong>{' '}
+                {automationConfig.lastRunAt
+                  ? new Date(automationConfig.lastRunAt).toLocaleString()
+                  : 'Never'}
+              </span>
+              <span>
+                <strong>Last Imported:</strong> {automationConfig.lastImportedCount} new (
+                {automationConfig.lastSkippedCount} skipped)
+              </span>
+            </div>
+            {automationConfig.lastError && (
+              <span className="text-[#FF3B30]">Last error: {automationConfig.lastError}</span>
+            )}
+          </div>
         </div>
       )}
 
