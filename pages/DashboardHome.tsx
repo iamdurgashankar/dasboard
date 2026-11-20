@@ -43,12 +43,12 @@ const FEATURE_CARDS_META = [
     subtitle: 'Role permissions & accounts'
   },
   {
-    key: 'team',
-    label: 'Team Velocity',
-    icon: 'fa-users',
-    tint: 'from-[#BF5AF2] to-[#8944AB]',
-    path: '/team',
-    subtitle: 'Contributor output & flow'
+    key: 'quotations',
+    label: 'Quotations',
+    icon: 'fa-file-invoice-dollar',
+    tint: 'from-[#6B63F2] to-[#4139BF]',
+    path: '/quotations',
+    subtitle: 'Generate client proposals'
   }
 ];
 
@@ -1037,40 +1037,40 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ currentUser }) => {
           </button>
         </div>
 
-        {/* Team Velocity Bento Card */}
+        {/* Quotations Bento Card */}
         <div className="apple-card p-6 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between mb-5">
               <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-[10px] bg-gradient-to-b from-[#BF5AF2] to-[#8944AB] flex items-center justify-center text-white shadow-sm">
-                  <i className="fas fa-users text-xs badge-white"></i>
+                <div className="w-9 h-9 rounded-[10px] bg-gradient-to-b from-[#6B63F2] to-[#4139BF] flex items-center justify-center text-white shadow-sm">
+                  <i className="fas fa-file-invoice-dollar text-xs badge-white"></i>
                 </div>
                 <div>
                   <h3 className="text-[17px] font-semibold text-[var(--apple-text-primary)] tracking-tight">
-                    Team Velocity
+                    Quotation Studio
                   </h3>
                   <p className="text-[12px] text-[var(--apple-text-secondary)]">
-                    Engineering output, code quality, and squad collaboration
+                    Print-ready A4 proposals, line items, and tax summaries
                   </p>
                 </div>
               </div>
-              <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]">
-                94% Efficiency
+              <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-[#4e45e1]/12 text-[var(--apple-blue)]">
+                A4 PDF
               </span>
             </div>
 
             <div className="space-y-4">
               {[
-                { label: 'Code Quality & Architecture', score: 96, color: '#4e45e1' },
-                { label: 'Review & PR Turnaround', score: 91, color: '#5856D6' },
-                { label: 'Editorial & Documentation', score: 89, color: '#AF52DE' },
-                { label: 'Client Response SLA', score: 98, color: '#28CD41' }
+                { label: 'Server & Hosting Proposals', score: 100, color: '#4e45e1' },
+                { label: 'Custom Web & App Builds', score: 100, color: '#5856D6' },
+                { label: 'AI & Automation Suites', score: 100, color: '#6B63F2' },
+                { label: 'PDF & Standalone HTML Export', score: 100, color: '#28CD41' }
               ].map((item) => (
                 <div key={item.label} className="space-y-1.5">
                   <div className="flex items-center justify-between text-[13px]">
                     <span className="font-medium text-[var(--apple-text-primary)]">{item.label}</span>
-                    <span className="font-mono text-[12px] font-semibold text-[var(--apple-text-secondary)]">
-                      {item.score}%
+                    <span className="font-mono text-[11px] font-semibold text-[var(--apple-text-secondary)]">
+                      Ready
                     </span>
                   </div>
                   <div className="w-full h-2 bg-black/[0.06] dark:bg-white/[0.08] rounded-full overflow-hidden">
@@ -1085,10 +1085,10 @@ const DashboardHome: React.FC<DashboardHomeProps> = ({ currentUser }) => {
           </div>
 
           <button
-            onClick={() => navigate('/team')}
+            onClick={() => navigate('/quotations')}
             className="w-full mt-5 pt-3.5 border-t border-[var(--apple-border)] text-[13px] font-medium text-[var(--apple-blue)] hover:opacity-80 transition-opacity text-center"
           >
-            Open Team Velocity Dashboard →
+            Open Quotation Generator →
           </button>
         </div>
       </div>

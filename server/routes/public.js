@@ -260,4 +260,45 @@ router.get(blogDetailPaths, async (req, res) => {
     }
 });
 
+import { ensureQuotationsTable, slugifyClient } from './quotations.js';
+
+// Public Quotation Detail API (Used by devinquire.com/quotation/:slug)
+router.get(['/quotation', '/quotation.php'], async (req, res) => {
+    const slugParam = req.query.slug || '';
+    const cleanSlug = slugifyClient(slugParam);
+
+    if (!slugParam || !cleanSlug) {
+        return sendJsonResponse(res, "error", "Quotation slug is required.", null, 400);
+    }
+
+    try {
+        await ensureQuotationsTable();
+        const result = await db.query(
+            'SELECT id, slug, quotation_no, client_name, payload, created_at, updated_at FROM quotations WHERE slug = $1 LIMIT 1',
+            [cleanSlug]
+        );
+        const row = result.rows?.[0];
+        if (!row) {
+            return sendJsonResponse(res, "error", "Quotation not found.", null, 404);
+        }
+        let parsed = {};
+        try {
+            parsed = typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload || {};
+        } catch {
+            parsed = {};
+        }
+        return sendJsonResponse(res, "success", "Quotation retrieved.", {
+            ...parsed,
+            id: String(row.id),
+            slug: row.slug,
+            quotationNo: parsed.quotationNo || row.quotation_no,
+            clientName: parsed.clientName || row.client_name,
+            updatedAt: row.updated_at || parsed.updatedAt || row.created_at,
+        });
+    } catch (err) {
+        console.error("Public Quotation API Error:", err);
+        return sendJsonResponse(res, "error", "Failed to retrieve quotation.", null, 500);
+    }
+});
+
 export default router;

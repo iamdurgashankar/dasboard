@@ -7,7 +7,7 @@ import ClientProjects from './pages/ClientProjects';
 import AIInquiry from './pages/AIInquiry';
 import BlogManagement from './pages/BlogManagement';
 import UserManagement from './pages/UserManagement';
-import Team from './pages/Team';
+import Quotations from './pages/Quotations';
 import ProjectDetail from './pages/ProjectDetail';
 import ContactSubmissions from './pages/ContactSubmissions';
 import Login from './pages/Login';
@@ -213,11 +213,13 @@ const AppContent = () => {
               </ProtectedRoute>
             } />
 
-            <Route path="/team" element={
-              <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.TEAM}>
-                <Team />
+            <Route path="/quotations" element={
+              <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.QUOTATIONS}>
+                <Quotations />
               </ProtectedRoute>
             } />
+
+            <Route path="/team" element={<Navigate to="/quotations" replace />} />
 
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

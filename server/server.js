@@ -65,6 +65,7 @@ import notificationsRouter from "./routes/notifications.js";
 import analyticsRouter from "./routes/analytics.js";
 import publicRouter from "./routes/public.js";
 import feedbackRouter from "./routes/feedback.js";
+import quotationsRouter from "./routes/quotations.js";
 
 import connectPgSimple from "connect-pg-simple";
 import pg from "pg";
@@ -392,6 +393,7 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/analytics", analyticsRouter);
 app.use("/api/public", publicRouter);
 app.use("/api/feedback", feedbackRouter);
+app.use("/api/quotations", quotationsRouter);
 
 // Global 404 for /api namespace — JSON payload, not HTML
 app.use("/api/*", (req, res) => {

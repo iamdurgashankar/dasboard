@@ -66,10 +66,10 @@ const Sidebar: React.FC<SidebarProps> = ({ setActiveTab, isOpen, setIsOpen, user
       group: 'Management'
     },
     {
-      id: DashboardTab.TEAM,
-      label: 'Team Velocity',
-      icon: 'fa-users',
-      path: '/team',
+      id: DashboardTab.QUOTATIONS,
+      label: 'Quotations',
+      icon: 'fa-file-invoice-dollar',
+      path: '/quotations',
       tint: 'from-[#6B63F2] to-[#4139BF]',
       group: 'Management'
     },

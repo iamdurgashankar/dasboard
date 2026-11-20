@@ -142,7 +142,8 @@ export enum DashboardTab {
   INQUIRE = 'inquire',
   ANALYTICS = 'analytics',
   TASKS = 'tasks',
-  TEAM = 'team',
+  TEAM = 'quotations',
+  QUOTATIONS = 'quotations',
   BLOGS = 'blogs',
   USERS = 'users',
   CONTACTS = 'contacts'

@@ -22,7 +22,7 @@ const ALL_NAV_ITEMS = [
   { id: DashboardTab.CONTACTS, label: 'Client Inquiries', icon: 'fa-envelope-open-text', path: '/contacts', keywords: 'leads, contacts, clients, messages' },
   { id: DashboardTab.BLOGS, label: 'Editorial Studio', icon: 'fa-pen-nib', path: '/blogs', keywords: 'posts, articles, content, writing, blogs' },
   { id: DashboardTab.USERS, label: 'Access & Users', icon: 'fa-user-shield', path: '/users', keywords: 'admin, roles, permissions, accounts, users' },
-  { id: DashboardTab.TEAM, label: 'Team Velocity', icon: 'fa-users', path: '/team', keywords: 'sprints, members, agile, productivity, team' },
+  { id: DashboardTab.QUOTATIONS, label: 'Quotations', icon: 'fa-file-invoice-dollar', path: '/quotations', keywords: 'quotation, proposal, invoice, pricing, billing' },
 ];
 
 const Header: React.FC<HeaderProps> = ({

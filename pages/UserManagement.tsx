@@ -13,7 +13,7 @@ const ROLE_DETAILS: Record<UserRole, { icon: string; color: string; desc: string
     icon: 'fa-code',
     color: 'text-[var(--apple-blue)]',
     bg: 'bg-[#4e45e1]/12',
-    desc: 'Access to Client Projects, DI AI, Editorial Studio, Client Inquiries, and Team Velocity.'
+    desc: 'Access to Client Projects, DI AI, Editorial Studio, Client Inquiries, and Quotations.'
   },
   Editor: {
     icon: 'fa-pen-nib',

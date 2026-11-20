@@ -141,6 +141,7 @@ function getEmbeddedStore() {
     blog_posts: [],
     notifications: [],
     contacts: [],
+    quotations: [],
     settings: getDefaultSettings(),
   };
 
@@ -701,6 +702,66 @@ function executeEmbeddedQuery(text, params = []) {
   if (qLower.startsWith("delete from contacts")) {
     const targetId = Number(params[0]);
     store.contacts = store.contacts.filter((c) => Number(c.id) !== targetId);
+    saveEmbeddedStore();
+    return { rows: [], rowCount: 1 };
+  }
+
+  // QUOTATIONS queries
+  if (!Array.isArray(store.quotations)) store.quotations = [];
+
+  if (qLower.includes("create table if not exists quotations")) {
+    return { rows: [], rowCount: 0 };
+  }
+
+  if (qLower.includes("from quotations") && qLower.startsWith("select")) {
+    if (qLower.includes("where slug = $1")) {
+      const targetSlug = String(params[0] || "").toLowerCase();
+      const found = store.quotations.filter((qt) => String(qt.slug || "").toLowerCase() === targetSlug);
+      return { rows: found, rowCount: found.length };
+    }
+    const rows = [...store.quotations].reverse();
+    return { rows, rowCount: rows.length };
+  }
+
+  if (qLower.startsWith("insert into quotations")) {
+    const id = nextId(store.quotations);
+    store.quotations.push({
+      id,
+      slug: params[0],
+      quotation_no: params[1],
+      client_name: params[2],
+      payload: params[3],
+      created_at: now,
+      updated_at: now,
+    });
+    saveEmbeddedStore();
+    return { rows: [{ id }], rowCount: 1 };
+  }
+
+  if (qLower.startsWith("update quotations set")) {
+    const targetId = Number(params[3]);
+    store.quotations = store.quotations.map((qt) =>
+      Number(qt.id) === targetId
+        ? {
+            ...qt,
+            quotation_no: params[0],
+            client_name: params[1],
+            payload: params[2],
+            updated_at: now,
+          }
+        : qt
+    );
+    saveEmbeddedStore();
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (qLower.startsWith("delete from quotations")) {
+    const target = params[0];
+    if (qLower.includes("where slug = $1")) {
+      store.quotations = store.quotations.filter((qt) => String(qt.slug) !== String(target));
+    } else {
+      store.quotations = store.quotations.filter((qt) => Number(qt.id) !== Number(target));
+    }
     saveEmbeddedStore();
     return { rows: [], rowCount: 1 };
   }

@@ -700,5 +700,17 @@ export const api = {
             body: JSON.stringify({ id })
         }),
         markAllRead: () => api.fetch('/notifications/mark_all_read', { method: 'POST' })
+    },
+
+    quotations: {
+        list: () => api.fetch('/quotations/list'),
+        save: (data: any) => api.fetch('/quotations/save', {
+            method: 'POST',
+            body: JSON.stringify(data)
+        }),
+        delete: (payload: { id?: string; slug?: string }) => api.fetch('/quotations/delete', {
+            method: 'POST',
+            body: JSON.stringify(payload)
+        })
     }
 };
