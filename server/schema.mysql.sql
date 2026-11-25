@@ -131,6 +131,19 @@ CREATE TABLE IF NOT EXISTS `system_settings` (
     `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 9b. Social Posts Table (Instagram & Facebook Omnichannel Studio Posts)
+CREATE TABLE IF NOT EXISTS `social_posts` (
+    `id` INT AUTO_INCREMENT PRIMARY KEY,
+    `blog_id` INT DEFAULT NULL,
+    `platform` VARCHAR(50) NOT NULL,
+    `title` VARCHAR(255) NOT NULL,
+    `caption` LONGTEXT,
+    `status` VARCHAR(50) DEFAULT 'draft',
+    `payload` LONGTEXT NOT NULL,
+    `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 10. Default Admin Provisioning (Email: admin@devinquire.com | Password: DevInquire2025!)
 INSERT INTO `users` (`email`, `password`, `name`, `role`, `status`)
 VALUES (

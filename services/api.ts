@@ -29,6 +29,7 @@ function getFallbackStore() {
         projects: [],
         tasks: [],
         blogs: [],
+        socialPosts: [],
         contacts: [],
         notifications: []
     };
@@ -351,8 +352,127 @@ function handleOfflineFallback(endpoint: string, options: RequestInit = {}): any
         store.blogs = store.blogs.map((b: any) =>
             String(b.id) === String(body.id) ? { ...b, status: 'published' } : b
         );
+        store.socialPosts = (store.socialPosts || []).map((sp: any) =>
+            String(sp.blogId) === String(body.id) ? { ...sp, status: 'published' } : sp
+        );
         saveFallbackStore(store);
-        return { status: 'success', message: 'Article published and synced.' };
+        return { status: 'success', message: 'Article published and synced across Website, Instagram & Facebook.' };
+    }
+
+    if (endpoint.startsWith('/blog/social/config')) {
+        if (!store.socialConfig) {
+            store.socialConfig = {
+                autoPopulateInstagram: true,
+                autoPopulateFacebook: true,
+                autoSyncOnBlogUpdate: true,
+                autoPopulateDailyDev: true,
+                autoPublishOnBlogPublish: true,
+                instagramHandle: '@devinquire',
+                facebookPageName: 'DevInquire',
+                defaultHashtags: ['DevInquire', 'SoftwareEngineering', 'TechInsights'],
+                ctaTemplate: 'Read the full engineering breakdown:',
+                instagramAccountId: '',
+                instagramAccessToken: '',
+                facebookPageId: '',
+                facebookAccessToken: '',
+                webhookUrl: '',
+            };
+        }
+        if (options.method === 'POST') {
+            store.socialConfig = { ...store.socialConfig, ...body };
+            saveFallbackStore(store);
+        }
+        return { status: 'success', message: 'Social configuration retrieved.', data: store.socialConfig };
+    }
+
+    if (endpoint.startsWith('/blog/social/list')) {
+        const platform = new URLSearchParams(endpoint.split('?')[1] || '').get('platform');
+        const list = (store.socialPosts || []).filter((sp: any) =>
+            !platform || sp.platform === platform
+        );
+        return { status: 'success', message: 'Social posts retrieved.', data: list };
+    }
+
+    if (endpoint.startsWith('/blog/social/save')) {
+        if (!Array.isArray(store.socialPosts)) store.socialPosts = [];
+        const platforms = Array.isArray(body.platforms) && body.platforms.length > 0
+            ? body.platforms
+            : [body.platform || 'instagram'];
+        const saved: any[] = [];
+        for (const plt of platforms) {
+            if (body.id && platforms.length === 1) {
+                store.socialPosts = store.socialPosts.map((sp: any) =>
+                    String(sp.id) === String(body.id) ? { ...sp, ...body, platform: plt } : sp
+                );
+                saved.push({ ...body, platform: plt });
+            } else {
+                const item = {
+                    id: `${Date.now()}-${plt}`,
+                    platform: plt,
+                    blogId: body.blogId || null,
+                    title: body.title || 'Social Post',
+                    caption: body.caption || '',
+                    hashtags: Array.isArray(body.hashtags) ? body.hashtags : ['DevInquire'],
+                    imageUrl: body.imageUrl || '',
+                    articleUrl: body.articleUrl || 'https://devinquire.com',
+                    category: body.category || 'Engineering',
+                    accountHandle: plt === 'instagram' ? '@devinquire' : 'DevInquire',
+                    status: body.status || 'draft',
+                    updatedAt: new Date().toISOString(),
+                };
+                store.socialPosts.unshift(item);
+                saved.push(item);
+            }
+        }
+        saveFallbackStore(store);
+        return { status: 'success', message: 'Social post saved.', data: { posts: saved } };
+    }
+
+    if (endpoint.startsWith('/blog/social/publish')) {
+        store.socialPosts = (store.socialPosts || []).map((sp: any) =>
+            String(sp.id) === String(body.id)
+                ? { ...sp, status: 'published', publishedAt: new Date().toISOString() }
+                : sp
+        );
+        saveFallbackStore(store);
+        return { status: 'success', message: 'Social post published.' };
+    }
+
+    if (endpoint.startsWith('/blog/social/delete')) {
+        store.socialPosts = (store.socialPosts || []).filter((sp: any) => String(sp.id) !== String(body.id));
+        saveFallbackStore(store);
+        return { status: 'success', message: 'Social post deleted.' };
+    }
+
+    if (endpoint.startsWith('/blog/social/populate-all')) {
+        if (!Array.isArray(store.socialPosts)) store.socialPosts = [];
+        let count = 0;
+        for (const b of store.blogs || []) {
+            for (const plt of ['instagram', 'facebook']) {
+                const exists = store.socialPosts.find(
+                    (sp: any) => String(sp.blogId) === String(b.id) && sp.platform === plt
+                );
+                if (!exists) {
+                    store.socialPosts.unshift({
+                        id: `${Date.now()}-${b.id}-${plt}`,
+                        blogId: String(b.id),
+                        platform: plt,
+                        title: b.title,
+                        caption: `${b.title}\n\n${b.excerpt || b.content || ''}\n\nhttps://devinquire.com/blog/${b.slug || ''}`,
+                        hashtags: Array.isArray(b.tags) && b.tags.length > 0 ? b.tags : ['DevInquire'],
+                        imageUrl: b.featured_image || '',
+                        articleUrl: `https://devinquire.com/blog/${b.slug || ''}`,
+                        category: b.category || 'Engineering',
+                        accountHandle: plt === 'instagram' ? '@devinquire' : 'DevInquire',
+                        status: b.status === 'published' ? 'published' : 'draft',
+                        updatedAt: new Date().toISOString(),
+                    });
+                    count += 1;
+                }
+            }
+        }
+        saveFallbackStore(store);
+        return { status: 'success', message: `Populated ${count} Instagram & Facebook posts.`, data: { socialCount: count } };
     }
 
     if (endpoint.startsWith('/users/list')) {
@@ -658,8 +778,27 @@ export const api = {
         updateConfig: (data: any) => api.fetch('/blog/config', { method: 'POST', body: JSON.stringify(data) }),
         getAutomationStatus: () => api.fetch('/blog/automation/status'),
         saveAutomationConfig: (data: any) => api.fetch('/blog/automation/config', { method: 'POST', body: JSON.stringify(data) }),
-        runAutomationNow: (options?: { maxPerRun?: number; autoPublish?: boolean; categoryOverride?: string }) =>
-            api.fetch('/blog/automation/run', { method: 'POST', body: JSON.stringify(options || {}) })
+        runAutomationNow: (options?: { maxPerRun?: number; autoPublish?: boolean; categoryOverride?: string; autoPopulateSocial?: boolean }) =>
+            api.fetch('/blog/automation/run', { method: 'POST', body: JSON.stringify(options || {}) }),
+        listSocial: (platform?: 'instagram' | 'facebook') =>
+            api.fetch(platform ? `/blog/social/list?platform=${platform}` : '/blog/social/list'),
+        saveSocial: (data: any) => api.fetch('/blog/social/save', { method: 'POST', body: JSON.stringify(data) }),
+        publishSocial: (id: string) => api.fetch('/blog/social/publish', { method: 'POST', body: JSON.stringify({ id }) }),
+        deleteSocial: (id: string) => api.fetch('/blog/social/delete', { method: 'POST', body: JSON.stringify({ id }) }),
+        populateSocialFromBlogs: (forceOverwrite: boolean = false) =>
+            api.fetch('/blog/social/populate-all', { method: 'POST', body: JSON.stringify({ forceOverwrite }) }),
+        getSocialConfig: () => api.fetch('/blog/social/config'),
+        saveSocialConfig: (data: any) => api.fetch('/blog/social/config', { method: 'POST', body: JSON.stringify(data) }),
+        getMetaOAuthUrl: (data: { metaAppId: string; metaAppSecret: string; redirectOrigin: string }) =>
+            api.fetch('/blog/social/oauth/url', { method: 'POST', body: JSON.stringify(data) }),
+        discoverMetaAccounts: (data: { accessToken: string; metaAppId?: string; metaAppSecret?: string }) =>
+            api.fetch('/blog/social/discover', { method: 'POST', body: JSON.stringify(data) }),
+        selectMetaPage: (pageId: string) =>
+            api.fetch('/blog/social/select-page', { method: 'POST', body: JSON.stringify({ pageId }) }),
+        verifySocialConnection: (data?: any) =>
+            api.fetch('/blog/social/verify', { method: 'POST', body: JSON.stringify(data || {}) }),
+        disconnectSocialAccounts: () =>
+            api.fetch('/blog/social/disconnect', { method: 'POST', body: JSON.stringify({}) })
     },
 
     users: {

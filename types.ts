@@ -36,6 +36,33 @@ export interface BlogPost {
   status: 'draft' | 'published' | 'synced';
   category: string;
   tags: string[];
+  featured_image?: string;
+}
+
+export type SocialPlatform = 'instagram' | 'facebook';
+
+export interface SocialPost {
+  id: string;
+  blogId?: string | null;
+  blogSlug?: string;
+  platform: SocialPlatform;
+  title: string;
+  excerpt?: string;
+  caption: string;
+  hashtags: string[];
+  imageUrl?: string;
+  articleUrl?: string;
+  category?: string;
+  authorName?: string;
+  accountHandle?: string;
+  status: 'draft' | 'published';
+  deliveryChannel?: string;
+  externalPostId?: string | null;
+  publishedAt?: string | null;
+  lastDispatchError?: string | null;
+  customEdited?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface ProjectComment {

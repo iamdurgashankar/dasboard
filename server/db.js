@@ -82,6 +82,33 @@ function getDefaultSettings() {
       ],
       seoTitleSuffix: " | DevInquire Insights",
     },
+    social_config: {
+      autoPopulateInstagram: true,
+      autoPopulateFacebook: true,
+      autoSyncOnBlogUpdate: true,
+      autoPopulateDailyDev: true,
+      autoPublishOnBlogPublish: true,
+      instagramHandle: "@devinquire",
+      facebookPageName: "DevInquire",
+      defaultHashtags: ["DevInquire", "SoftwareEngineering", "TechInsights"],
+      ctaTemplate: "Read the full engineering breakdown:",
+      defaultSocialImageUrl:
+        process.env.DEFAULT_SOCIAL_IMAGE_URL ||
+        "https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1080&q=80",
+      metaAppId: process.env.META_APP_ID || "",
+      metaAppSecret: process.env.META_APP_SECRET || "",
+      instagramAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID || "",
+      instagramAccessToken: process.env.INSTAGRAM_ACCESS_TOKEN || "",
+      facebookPageId: process.env.FACEBOOK_PAGE_ID || "",
+      facebookAccessToken: process.env.FACEBOOK_PAGE_ACCESS_TOKEN || "",
+      webhookUrl: process.env.SOCIAL_AUTOMATION_WEBHOOK_URL || "",
+      connectedPages: [],
+      connectedAt: null,
+      lastVerifiedAt: null,
+      lastSyncAt: null,
+      lastSyncedCount: 0,
+      lastDispatchError: null,
+    },
   };
 }
 
@@ -105,6 +132,10 @@ function getEmbeddedStore() {
         embeddedData.settings.blog_config = {
           ...defaults.blog_config,
           ...(embeddedData.settings.blog_config || {}),
+        };
+        embeddedData.settings.social_config = {
+          ...defaults.social_config,
+          ...(embeddedData.settings.social_config || {}),
         };
       }
       return embeddedData;
@@ -142,6 +173,7 @@ function getEmbeddedStore() {
     notifications: [],
     contacts: [],
     quotations: [],
+    social_posts: [],
     settings: getDefaultSettings(),
   };
 
@@ -766,6 +798,91 @@ function executeEmbeddedQuery(text, params = []) {
     return { rows: [], rowCount: 1 };
   }
 
+  // SOCIAL POSTS queries
+  if (!Array.isArray(store.social_posts)) store.social_posts = [];
+
+  if (qLower.includes("from social_posts") && qLower.startsWith("select")) {
+    let items = [...store.social_posts];
+    if (qLower.includes("where blog_id = $1 and platform = $2")) {
+      const targetBlogId = Number(params[0]);
+      const targetPlatform = String(params[1] || "").toLowerCase();
+      items = items.filter(
+        (sp) =>
+          Number(sp.blog_id) === targetBlogId &&
+          String(sp.platform || "").toLowerCase() === targetPlatform,
+      );
+      return { rows: items.slice(0, 1), rowCount: Math.min(items.length, 1) };
+    }
+    if (qLower.includes("where blog_id = $1")) {
+      const targetBlogId = Number(params[0]);
+      items = items.filter((sp) => Number(sp.blog_id) === targetBlogId);
+      return { rows: items, rowCount: items.length };
+    }
+    if (qLower.includes("where id = $1")) {
+      const targetId = Number(params[0]);
+      items = items.filter((sp) => Number(sp.id) === targetId);
+      return { rows: items.slice(0, 1), rowCount: Math.min(items.length, 1) };
+    }
+    if (qLower.includes("where platform = $1")) {
+      const targetPlatform = String(params[0] || "").toLowerCase();
+      items = items.filter(
+        (sp) => String(sp.platform || "").toLowerCase() === targetPlatform,
+      );
+    }
+    const rows = items.reverse();
+    return { rows, rowCount: rows.length };
+  }
+
+  if (qLower.startsWith("insert into social_posts")) {
+    const id = nextId(store.social_posts);
+    store.social_posts.push({
+      id,
+      blog_id: params[0] !== undefined && params[0] !== null ? Number(params[0]) : null,
+      platform: params[1] || "instagram",
+      title: params[2] || "",
+      caption: params[3] || "",
+      status: params[4] || "draft",
+      payload: params[5] || "{}",
+      created_at: now,
+      updated_at: now,
+    });
+    saveEmbeddedStore();
+    return { rows: [{ id }], rowCount: 1 };
+  }
+
+  if (qLower.startsWith("update social_posts set")) {
+    const targetId = Number(params[4]);
+    store.social_posts = store.social_posts.map((sp) =>
+      Number(sp.id) === targetId
+        ? {
+            ...sp,
+            title: params[0],
+            caption: params[1],
+            status: params[2],
+            payload: params[3],
+            updated_at: now,
+          }
+        : sp,
+    );
+    saveEmbeddedStore();
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (qLower.startsWith("delete from social_posts")) {
+    const target = params[0];
+    if (qLower.includes("where blog_id = $1")) {
+      store.social_posts = store.social_posts.filter(
+        (sp) => Number(sp.blog_id) !== Number(target),
+      );
+    } else {
+      store.social_posts = store.social_posts.filter(
+        (sp) => Number(sp.id) !== Number(target),
+      );
+    }
+    saveEmbeddedStore();
+    return { rows: [], rowCount: 1 };
+  }
+
   // NOTIFICATIONS queries
   if (qLower.includes("from notifications") && qLower.startsWith("select")) {
     const uid = Number(params[0]);
@@ -1247,6 +1364,17 @@ export const db = {
         `CREATE TABLE IF NOT EXISTS system_settings (
           setting_key VARCHAR(100) PRIMARY KEY,
           setting_value JSONB NOT NULL,
+          updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        )`,
+        `CREATE TABLE IF NOT EXISTS social_posts (
+          id SERIAL PRIMARY KEY,
+          blog_id INT DEFAULT NULL,
+          platform VARCHAR(50) NOT NULL,
+          title VARCHAR(255) NOT NULL,
+          caption TEXT,
+          status VARCHAR(50) DEFAULT 'draft',
+          payload TEXT NOT NULL,
+          created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         )`,
       ];
