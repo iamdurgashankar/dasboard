@@ -165,6 +165,7 @@ if (isProd) {
       },
       hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
       referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+      crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
       crossOriginEmbedderPolicy: false,
       crossOriginResourcePolicy: { policy: "cross-origin" },
     }),
@@ -404,30 +405,32 @@ app.use("/api/*", (req, res) => {
   });
 });
 
-// Serve built frontend static assets (dist/) when present
+// Serve built frontend static assets (dist/)
 const distPath = path.join(__dirname, "../dist");
-if (fs.existsSync(distPath)) {
-  app.use(
-    express.static(distPath, {
-      maxAge: isProd ? "1d" : 0,
-      index: false,
-      setHeaders: (res, filePath) => {
-        if (filePath.endsWith(".html")) {
-          res.setHeader("Cache-Control", "no-cache, no-store");
-        }
-      },
-    }),
-  );
+app.use(
+  express.static(distPath, {
+    maxAge: isProd ? "1d" : 0,
+    index: false,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith(".html")) {
+        res.setHeader("Cache-Control", "no-cache, no-store");
+      }
+    },
+  }),
+);
 
-  app.get("*", (req, res, next) => {
-    if (req.path.startsWith("/api/") || req.path === "/health") {
-      return next();
-    }
-    res.sendFile(path.join(distPath, "index.html"), (err) => {
-      if (err) next(err);
-    });
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api/") || req.path === "/health") {
+    return next();
+  }
+  const indexHtml = path.join(distPath, "index.html");
+  if (!fs.existsSync(indexHtml)) {
+    return next();
+  }
+  res.sendFile(indexHtml, (err) => {
+    if (err) next(err);
   });
-}
+});
 
 // Global Error Handler
 app.use((err, req, res, next) => {
@@ -480,8 +483,42 @@ const isMainModule =
   entryScript.endsWith("lsnode.js") ||
   process.env.START_SERVER === "true";
 
+// Ensure production SPA bundle (dist/) is up-to-date after Git deployments on Hostinger
+async function ensureFreshDistBuild() {
+  if (!isProd) return;
+  try {
+    const rootDir = path.join(__dirname, "..");
+    const indexHtml = path.join(distPath, "index.html");
+    const watchedSources = [
+      path.join(rootDir, "App.tsx"),
+      path.join(rootDir, "pages/BlogManagement.tsx"),
+      path.join(rootDir, "pages/Quotations.tsx"),
+      path.join(rootDir, "services/api.ts"),
+    ];
+    let needsBuild = !fs.existsSync(indexHtml);
+    if (!needsBuild) {
+      const distMtime = fs.statSync(indexHtml).mtimeMs;
+      for (const src of watchedSources) {
+        if (fs.existsSync(src) && fs.statSync(src).mtimeMs > distMtime) {
+          needsBuild = true;
+          break;
+        }
+      }
+    }
+    if (needsBuild) {
+      console.log("[BUILD] Detected updated frontend sources — rebuilding dist/ via Vite...");
+      const { build } = await import("vite");
+      await build({ root: rootDir, logLevel: "info" });
+      console.log("[BUILD] Frontend dist/ bundle rebuilt successfully.");
+    }
+  } catch (err) {
+    console.warn("[BUILD] Auto-build skipped:", err.message);
+  }
+}
+
 // Bootstrap DB schema + default Admin and start Server
 export const ready = (async () => {
+  await ensureFreshDistBuild();
   await db.bootstrap();
   if (isMainModule) {
     app.listen(port, () => {

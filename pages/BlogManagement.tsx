@@ -35,6 +35,9 @@ interface SocialConfig {
   defaultSocialImageUrl?: string;
   metaAppId?: string;
   metaAppSecret?: string;
+  metaConfigId?: string;
+  oauthScopeMode?: 'instagram_and_facebook' | 'facebook_only';
+  includeBusinessManagement?: boolean;
   instagramAccountId: string;
   instagramAccessToken: string;
   facebookPageId: string;
@@ -77,6 +80,9 @@ const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
   defaultSocialImageUrl: '',
   metaAppId: '',
   metaAppSecret: '',
+  metaConfigId: '',
+  oauthScopeMode: 'instagram_and_facebook',
+  includeBusinessManagement: false,
   instagramAccountId: '',
   instagramAccessToken: '',
   facebookPageId: '',
@@ -220,26 +226,71 @@ const BlogManagement: React.FC = () => {
   } | null>(null);
 
   useEffect(() => {
-    const onMessage = (event: MessageEvent) => {
-      if (event.data && event.data.type === 'DI_META_OAUTH_RESULT') {
-        setIsConnectingOAuth(false);
-        if (event.data.status === 'success') {
-          setSocialModalNotice({
-            type: 'success',
-            text: event.data.message || 'Facebook Page & Instagram connected successfully.',
-          });
-          showToast(event.data.message || 'Facebook Page & Instagram connected.');
-          fetchSocialConfig();
-        } else {
-          setSocialModalNotice({
-            type: 'error',
-            text: event.data.message || 'Meta OAuth connection failed.',
-          });
+    const handleOAuthPayload = (payload: any) => {
+      if (!payload || payload.type !== 'DI_META_OAUTH_RESULT') return;
+      setIsConnectingOAuth(false);
+      if (payload.status === 'success') {
+        setSocialModalNotice({
+          type: 'success',
+          text: payload.message || 'Facebook Page & Instagram connected successfully.',
+        });
+        showToast(payload.message || 'Facebook Page & Instagram connected.');
+        fetchSocialConfig();
+      } else {
+        setSocialModalNotice({
+          type: 'error',
+          text: payload.message || 'Meta OAuth connection failed.',
+        });
+      }
+    };
+
+    // Check URL query params for Same-Tab Redirect OAuth return
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const oauthStatus = params.get('meta_oauth');
+      const oauthMsg = params.get('meta_msg');
+      if (oauthStatus) {
+        setShowSocialConfigModal(true);
+        handleOAuthPayload({
+          type: 'DI_META_OAUTH_RESULT',
+          status: oauthStatus,
+          message: oauthMsg || '',
+        });
+        const cleanUrl = `${window.location.pathname}${window.location.hash || '#/blogs'}`;
+        window.history.replaceState({}, '', cleanUrl);
+      }
+    } catch {
+      // ignore URL parse errors
+    }
+
+    const onMessage = (event: MessageEvent) => handleOAuthPayload(event.data);
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'di_meta_oauth_event' && event.newValue) {
+        try {
+          handleOAuthPayload(JSON.parse(event.newValue));
+        } catch {
+          // ignore
         }
       }
     };
+
+    let bc: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        bc = new BroadcastChannel('di_meta_oauth');
+        bc.onmessage = (ev) => handleOAuthPayload(ev.data);
+      }
+    } catch {
+      // ignore if BroadcastChannel unsupported
+    }
+
     window.addEventListener('message', onMessage);
-    return () => window.removeEventListener('message', onMessage);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('message', onMessage);
+      window.removeEventListener('storage', onStorage);
+      if (bc) bc.close();
+    };
   }, []);
 
   // daily.dev + Omnichannel Automation Workflow state
@@ -656,37 +707,37 @@ const BlogManagement: React.FC = () => {
     };
 
     try {
-      let savedId = editingId;
+      let apiRes: any = null;
       if (editingId) {
-        const res = await api.blog.update({ id: editingId, ...payload });
-        if (res.status !== 'success') throw new Error(res.message);
+        apiRes = await api.blog.update({ id: editingId, ...payload });
+        if (apiRes.status !== 'success') throw new Error(apiRes.message);
+        if (targetStatus === 'published' && blogConfig.autoSyncOnPublish) {
+          apiRes = await api.blog.sync(editingId);
+        }
       } else {
-        const res = await api.blog.create(payload);
-        if (res.status !== 'success') throw new Error(res.message);
-        savedId = res.data?.id ? String(res.data.id) : null;
-      }
-
-      if (targetStatus === 'published' && savedId && blogConfig.autoSyncOnPublish) {
-        await api.blog.sync(savedId);
+        apiRes = await api.blog.create(payload);
+        if (apiRes.status !== 'success') throw new Error(apiRes.message);
       }
 
       await Promise.all([fetchBlogs(), fetchSocialPosts()]);
       setIsComposing(false);
       setEditingId(null);
 
-      const channels = [
-        'Blog',
-        composerInstagramEnabled ? 'Instagram' : null,
-        composerFacebookEnabled ? 'Facebook' : null,
-      ].filter(Boolean);
+      const warnings: string[] = apiRes?.data?.socialWarnings || [];
+      if (warnings.length > 0 && targetStatus === 'published') {
+        setError(`Blog published live, but social live dispatch reported: ${warnings.join(' • ')}`);
+      } else {
+        setError(null);
+      }
 
       showToast(
-        targetStatus === 'published'
-          ? `Published & populated across ${channels.join(', ')}.`
-          : `Saved & populated across ${channels.join(', ')}.`
+        apiRes?.message ||
+          (targetStatus === 'published'
+            ? 'Published across Website, Instagram & Facebook.'
+            : 'Saved across Blog, Instagram & Facebook.')
       );
     } catch (err: any) {
-      alert(err.message || 'Failed to save article.');
+      setError(err.message || 'Failed to save article.');
     } finally {
       setIsSavingPost(false);
     }
@@ -791,14 +842,19 @@ const BlogManagement: React.FC = () => {
 
   const handlePublishSocialPost = async (post: SocialPost) => {
     setPublishingSocialId(post.id);
+    setError(null);
     try {
       const res = await api.blog.publishSocial(post.id);
       if (res.status === 'success') {
         await fetchSocialPosts();
-        showToast(res.message || `${post.platform === 'instagram' ? 'Instagram' : 'Facebook'} post published.`);
+        showToast(
+          res.message ||
+            `${post.platform === 'instagram' ? 'Instagram' : 'Facebook'} post published live!`
+        );
       }
     } catch (err: any) {
-      alert(err.message || 'Failed to publish social post.');
+      await fetchSocialPosts();
+      setError(err.message || 'Failed to publish social post.');
     } finally {
       setPublishingSocialId(null);
     }
@@ -861,28 +917,60 @@ const BlogManagement: React.FC = () => {
     }
   };
 
-  const handleConnectMetaOAuth = async () => {
+  const handleConnectMetaOAuth = async (mode: 'popup' | 'redirect' = 'popup') => {
     setSocialModalNotice(null);
     setIsConnectingOAuth(true);
     try {
       const res = await api.blog.getMetaOAuthUrl({
-        metaAppId: socialConfig.metaAppId || '',
-        metaAppSecret: socialConfig.metaAppSecret || '',
+        metaAppId: (socialConfig.metaAppId || '').trim(),
+        metaAppSecret: (socialConfig.metaAppSecret || '').trim(),
+        metaConfigId: (socialConfig.metaConfigId || '').trim(),
+        oauthScopeMode: socialConfig.oauthScopeMode || 'instagram_and_facebook',
+        includeBusinessManagement: Boolean(socialConfig.includeBusinessManagement),
         redirectOrigin: window.location.origin,
+        mode,
       });
       if (res.status === 'success' && res.data?.authUrl) {
+        if (mode === 'redirect') {
+          window.location.href = res.data.authUrl;
+          return;
+        }
         const popup = window.open(
           res.data.authUrl,
           'di_meta_oauth',
           'width=620,height=720,menubar=no,toolbar=no,status=no'
         );
         if (!popup) {
+          // Automatically fall back to same-tab redirect if browser blocked the popup
+          const fallbackRes = await api.blog.getMetaOAuthUrl({
+            metaAppId: (socialConfig.metaAppId || '').trim(),
+            metaAppSecret: (socialConfig.metaAppSecret || '').trim(),
+            metaConfigId: (socialConfig.metaConfigId || '').trim(),
+            oauthScopeMode: socialConfig.oauthScopeMode || 'instagram_and_facebook',
+            includeBusinessManagement: Boolean(socialConfig.includeBusinessManagement),
+            redirectOrigin: window.location.origin,
+            mode: 'redirect',
+          });
+          if (fallbackRes.status === 'success' && fallbackRes.data?.authUrl) {
+            window.location.href = fallbackRes.data.authUrl;
+            return;
+          }
           setIsConnectingOAuth(false);
           setSocialModalNotice({
             type: 'error',
-            text: 'Popup was blocked by your browser. Allow popups for localhost and try again.',
+            text: 'Popup blocked. Click "Use Full-Page Redirect" right below.',
           });
+          return;
         }
+
+        // Poll popup close so UI refreshes even if cross-window events are blocked
+        const pollTimer = window.setInterval(async () => {
+          if (popup.closed) {
+            window.clearInterval(pollTimer);
+            setIsConnectingOAuth(false);
+            await fetchSocialConfig();
+          }
+        }, 1500);
       } else {
         setIsConnectingOAuth(false);
         setSocialModalNotice({
@@ -2524,6 +2612,27 @@ const BlogManagement: React.FC = () => {
                               ))}
                             </div>
                           )}
+
+                          {post.lastDispatchError && (
+                            <div className="p-2.5 rounded-[10px] bg-[#FF3B30]/10 border border-[#FF3B30]/20 text-[#FF3B30] text-[11.5px] leading-snug flex items-start gap-2">
+                              <i className="fas fa-circle-exclamation mt-0.5 shrink-0"></i>
+                              <span>{post.lastDispatchError}</span>
+                            </div>
+                          )}
+
+                          {post.externalUrl && post.status === 'published' && (
+                            <a
+                              href={post.externalUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-[#248A3D] dark:text-[#30D158] hover:underline"
+                            >
+                              <i className="fas fa-arrow-up-right-from-square text-[10px]"></i>
+                              <span>
+                                View Live Post on {isIg ? 'Instagram' : 'Facebook'}
+                              </span>
+                            </a>
+                          )}
                         </div>
 
                         {/* Card Footer */}
@@ -3027,13 +3136,55 @@ const BlogManagement: React.FC = () => {
                     </div>
                   </div>
 
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                        Permissions to Request
+                      </label>
+                      <select
+                        value={socialConfig.oauthScopeMode || 'instagram_and_facebook'}
+                        onChange={(e) =>
+                          setSocialConfig({
+                            ...socialConfig,
+                            oauthScopeMode: e.target.value as
+                              | 'instagram_and_facebook'
+                              | 'facebook_only',
+                          })
+                        }
+                        className="w-full apple-input px-3 py-2 text-[12px]"
+                      >
+                        <option value="instagram_and_facebook">
+                          Facebook Page + Instagram Publishing
+                        </option>
+                        <option value="facebook_only">
+                          Facebook Page Only (No Instagram Product Needed)
+                        </option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                        Login Config ID (Optional — FB Login for Business)
+                      </label>
+                      <input
+                        type="text"
+                        value={socialConfig.metaConfigId || ''}
+                        onChange={(e) =>
+                          setSocialConfig({ ...socialConfig, metaConfigId: e.target.value })
+                        }
+                        placeholder="Leave blank unless using Login Config"
+                        className="w-full apple-input px-3 py-2 text-[12px]"
+                      />
+                    </div>
+                  </div>
+
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-[var(--apple-text-tertiary)] bg-black/[0.03] dark:bg-white/[0.04] px-3 py-2 rounded-[9px]">
                     <span className="truncate">
                       <strong>Valid OAuth Redirect URI:</strong>{' '}
                       <code className="font-mono text-[var(--apple-blue)]">
                         {typeof window !== 'undefined'
                           ? `${window.location.origin}/api/blog/social/oauth/callback`
-                          : 'http://localhost:3000/api/blog/social/oauth/callback'}
+                          : 'https://dashboard.devinquire.com/api/blog/social/oauth/callback'}
                       </code>
                     </span>
                     <button
@@ -3050,19 +3201,31 @@ const BlogManagement: React.FC = () => {
                     </button>
                   </div>
 
-                  <button
-                    type="button"
-                    disabled={isConnectingOAuth}
-                    onClick={handleConnectMetaOAuth}
-                    className="w-full py-2.5 px-4 rounded-[11px] bg-[#1877F2] hover:bg-[#166FE5] text-white text-[13px] font-semibold flex items-center justify-center gap-2.5 shadow-sm transition disabled:opacity-60"
-                  >
-                    <FacebookIcon className="w-4 h-4" />
-                    <span className="badge-white">
-                      {isConnectingOAuth
-                        ? 'Waiting for Facebook Login Popup…'
-                        : 'Continue with Facebook & Connect Instagram'}
-                    </span>
-                  </button>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <button
+                      type="button"
+                      disabled={isConnectingOAuth}
+                      onClick={() => handleConnectMetaOAuth('popup')}
+                      className="flex-1 py-2.5 px-4 rounded-[11px] bg-[#1877F2] hover:bg-[#166FE5] text-white text-[13px] font-semibold flex items-center justify-center gap-2.5 shadow-sm transition disabled:opacity-60"
+                    >
+                      <FacebookIcon className="w-4 h-4" />
+                      <span className="badge-white">
+                        {isConnectingOAuth
+                          ? 'Connecting with Facebook…'
+                          : '1-Click Connect (Popup)'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isConnectingOAuth}
+                      onClick={() => handleConnectMetaOAuth('redirect')}
+                      className="py-2.5 px-4 apple-secondary-btn rounded-[11px] text-[12.5px] font-semibold flex items-center justify-center gap-2 shrink-0 disabled:opacity-60"
+                      title="Redirects in current tab — works even if browser blocks popups"
+                    >
+                      <i className="fas fa-arrow-right-to-bracket text-[#1877F2] text-xs"></i>
+                      <span>Connect (Full-Page Redirect)</span>
+                    </button>
+                  </div>
                 </div>
 
                 {/* Divider */}

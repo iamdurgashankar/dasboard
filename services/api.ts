@@ -789,7 +789,15 @@ export const api = {
             api.fetch('/blog/social/populate-all', { method: 'POST', body: JSON.stringify({ forceOverwrite }) }),
         getSocialConfig: () => api.fetch('/blog/social/config'),
         saveSocialConfig: (data: any) => api.fetch('/blog/social/config', { method: 'POST', body: JSON.stringify(data) }),
-        getMetaOAuthUrl: (data: { metaAppId: string; metaAppSecret: string; redirectOrigin: string }) =>
+        getMetaOAuthUrl: (data: {
+            metaAppId: string;
+            metaAppSecret: string;
+            redirectOrigin: string;
+            mode?: 'popup' | 'redirect';
+            oauthScopeMode?: string;
+            metaConfigId?: string;
+            includeBusinessManagement?: boolean;
+        }) =>
             api.fetch('/blog/social/oauth/url', { method: 'POST', body: JSON.stringify(data) }),
         discoverMetaAccounts: (data: { accessToken: string; metaAppId?: string; metaAppSecret?: string }) =>
             api.fetch('/blog/social/discover', { method: 'POST', body: JSON.stringify(data) }),

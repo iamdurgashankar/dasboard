@@ -39,7 +39,44 @@ const socialSelectPagePaths = ["/social/select-page", "/social/select-page.php"]
 const socialVerifyPaths = ["/social/verify", "/social/verify.php"];
 const socialDisconnectPaths = ["/social/disconnect", "/social/disconnect.php"];
 
-const oauthStateStore = new Map();
+const OAUTH_STATE_SECRET =
+  process.env.SESSION_SECRET ||
+  process.env.JWT_SECRET ||
+  "devinquire-meta-oauth-state-secret-2026";
+
+function createOAuthState(data = {}) {
+  const payload = {
+    ...data,
+    nonce: crypto.randomBytes(8).toString("hex"),
+    exp: Date.now() + 20 * 60 * 1000,
+  };
+  const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", OAUTH_STATE_SECRET)
+    .update(encoded)
+    .digest("base64url");
+  return `${encoded}.${sig}`;
+}
+
+function verifyOAuthState(token) {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  try {
+    const [encoded, sig] = token.split(".");
+    if (!encoded || !sig) return null;
+    const expected = crypto
+      .createHmac("sha256", OAUTH_STATE_SECRET)
+      .update(encoded)
+      .digest("base64url");
+    if (sig !== expected) return null;
+    const parsed = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+    if (!parsed || (parsed.exp && Date.now() > parsed.exp)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const DEFAULT_AUTOMATION_CONFIG = {
   enabled: false,
@@ -70,6 +107,9 @@ const DEFAULT_SOCIAL_CONFIG = {
     "https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1080&q=80",
   metaAppId: process.env.META_APP_ID || "",
   metaAppSecret: process.env.META_APP_SECRET || "",
+  metaConfigId: process.env.META_LOGIN_CONFIG_ID || "",
+  oauthScopeMode: "instagram_and_facebook",
+  includeBusinessManagement: false,
   instagramAccountId: process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID || "",
   instagramAccessToken: process.env.INSTAGRAM_ACCESS_TOKEN || "",
   facebookPageId: process.env.FACEBOOK_PAGE_ID || "",
@@ -149,6 +189,67 @@ export async function ensureSocialPostsTable() {
       )
     `)
     .catch(() => {});
+}
+
+async function loadSocialConfig() {
+  const fallback = {
+    ...DEFAULT_SOCIAL_CONFIG,
+    ...(db.getSettings("social_config") || {}),
+  };
+  try {
+    const res = await db.query(
+      "SELECT setting_value FROM system_settings WHERE setting_key = $1 LIMIT 1",
+      ["social_config"]
+    );
+    const row = res.rows?.[0];
+    if (row && row.setting_value) {
+      const parsed =
+        typeof row.setting_value === "string"
+          ? JSON.parse(row.setting_value)
+          : row.setting_value;
+      const merged = {
+        ...DEFAULT_SOCIAL_CONFIG,
+        ...fallback,
+        ...(parsed || {}),
+      };
+      db.updateSettings("social_config", merged);
+      return merged;
+    }
+  } catch {
+    // fallback to embedded settings
+  }
+  return fallback;
+}
+
+async function saveSocialConfig(patch = {}) {
+  const current = await loadSocialConfig();
+  const merged = {
+    ...DEFAULT_SOCIAL_CONFIG,
+    ...current,
+    ...(patch || {}),
+  };
+  db.updateSettings("social_config", merged);
+  const jsonStr = JSON.stringify(merged);
+  try {
+    const check = await db.query(
+      "SELECT setting_key FROM system_settings WHERE setting_key = $1 LIMIT 1",
+      ["social_config"]
+    );
+    if (check.rows && check.rows.length > 0) {
+      await db.query(
+        "UPDATE system_settings SET setting_value = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE setting_key = $2",
+        [jsonStr, "social_config"]
+      );
+    } else {
+      await db.query(
+        "INSERT INTO system_settings (setting_key, setting_value) VALUES ($1, $2::jsonb)",
+        ["social_config", jsonStr]
+      );
+    }
+  } catch {
+    // db.updateSettings already persisted to fallback store
+  }
+  return merged;
 }
 
 function parseSocialRow(row) {
@@ -275,53 +376,124 @@ function buildSocialPayloadFromBlog(blog, platform, socialCfg, blogCfg, override
 async function dispatchToExternalSocial(socialPost, socialCfg) {
   const results = {
     dispatched: false,
+    notConfigured: false,
     deliveryChannel: "studio_feed",
     externalPostId: socialPost.externalPostId || null,
+    externalUrl: socialPost.externalUrl || null,
     publishedAt: new Date().toISOString(),
     error: null,
   };
 
-  // 1. Direct Meta Graph API Publishing (when credentials are configured)
+  const hasWebhook = Boolean(socialCfg.webhookUrl && String(socialCfg.webhookUrl).trim());
+  const hasFbCreds = Boolean(socialCfg.facebookPageId && socialCfg.facebookAccessToken);
+  const hasIgCreds = Boolean(socialCfg.instagramAccountId && socialCfg.instagramAccessToken);
+
+  if (socialPost.platform === "facebook" && !hasFbCreds && !hasWebhook) {
+    results.notConfigured = true;
+    results.error =
+      "Facebook Page is not connected yet. Click 'Connect IG & FB' to connect your Facebook Page.";
+    return results;
+  }
+
+  if (socialPost.platform === "instagram" && !hasIgCreds && !hasWebhook) {
+    results.notConfigured = true;
+    results.error = hasFbCreds
+      ? "Facebook Page is connected, but no Instagram Business account is linked to this Page. In Facebook Page → Settings → Linked Accounts, link your Instagram Professional account, then reconnect."
+      : "Instagram Business account is not connected yet. Click 'Connect IG & FB' to connect.";
+    return results;
+  }
+
+  // 1. Direct Meta Graph API Publishing
   try {
-    if (
-      socialPost.platform === "facebook" &&
-      socialCfg.facebookPageId &&
-      socialCfg.facebookAccessToken
-    ) {
-      const fbEndpoint = `https://graph.facebook.com/v21.0/${encodeURIComponent(
-        socialCfg.facebookPageId
-      )}/feed`;
-      const fbRes = await fetch(fbEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: socialPost.caption,
-          link: socialPost.articleUrl || undefined,
-          access_token: socialCfg.facebookAccessToken,
-        }),
-        signal: AbortSignal.timeout(10000),
-      });
-      const fbJson = await fbRes.json().catch(() => ({}));
-      if (fbRes.ok && fbJson.id) {
+    if (socialPost.platform === "facebook" && hasFbCreds) {
+      const pageId = encodeURIComponent(socialCfg.facebookPageId);
+      let fbSuccessId = null;
+      let fbErr = null;
+
+      // Try photo post first if a valid public HTTPS image URL was provided
+      if (socialPost.imageUrl && /^https:\/\//i.test(socialPost.imageUrl)) {
+        const photoRes = await fetch(
+          `https://graph.facebook.com/v21.0/${pageId}/photos`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              url: socialPost.imageUrl,
+              caption: socialPost.caption,
+              published: true,
+              access_token: socialCfg.facebookAccessToken,
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        const photoJson = await photoRes.json().catch(() => ({}));
+        if (photoRes.ok && (photoJson.post_id || photoJson.id)) {
+          fbSuccessId = photoJson.post_id || photoJson.id;
+        } else {
+          fbErr = photoJson?.error?.message;
+        }
+      }
+
+      // Feed post (or fallback if photo URL couldn't be fetched by Meta)
+      if (!fbSuccessId) {
+        const feedEndpoint = `https://graph.facebook.com/v21.0/${pageId}/feed`;
+        const feedRes = await fetch(feedEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: socialPost.caption,
+            link: socialPost.articleUrl || undefined,
+            access_token: socialCfg.facebookAccessToken,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        const feedJson = await feedRes.json().catch(() => ({}));
+        if (feedRes.ok && feedJson.id) {
+          fbSuccessId = feedJson.id;
+        } else {
+          // Final fallback: post message without link attachment if link scrape failed
+          const msgOnlyRes = await fetch(feedEndpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              message: socialPost.caption,
+              access_token: socialCfg.facebookAccessToken,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+          const msgOnlyJson = await msgOnlyRes.json().catch(() => ({}));
+          if (msgOnlyRes.ok && msgOnlyJson.id) {
+            fbSuccessId = msgOnlyJson.id;
+          } else {
+            fbErr =
+              msgOnlyJson?.error?.message ||
+              feedJson?.error?.message ||
+              fbErr ||
+              `Facebook Graph API HTTP ${feedRes.status}`;
+          }
+        }
+      }
+
+      if (fbSuccessId) {
         results.dispatched = true;
         results.deliveryChannel = "meta_graph_api";
-        results.externalPostId = fbJson.id;
+        results.externalPostId = fbSuccessId;
+        results.externalUrl = `https://www.facebook.com/${fbSuccessId}`;
+        results.error = null;
       } else {
-        results.error =
-          fbJson?.error?.message || `Facebook Graph API HTTP ${fbRes.status}`;
+        results.error = fbErr || "Facebook Graph API rejected the post.";
       }
-    } else if (
-      socialPost.platform === "instagram" &&
-      socialCfg.instagramAccountId &&
-      socialCfg.instagramAccessToken
-    ) {
+    } else if (socialPost.platform === "instagram" && hasIgCreds) {
       const resolvedImageUrl =
-        socialPost.imageUrl ||
-        socialCfg.defaultSocialImageUrl ||
-        "https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1080&q=80";
+        socialPost.imageUrl && /^https:\/\//i.test(socialPost.imageUrl)
+          ? socialPost.imageUrl
+          : socialCfg.defaultSocialImageUrl ||
+            "https://images.unsplash.com/photo-1555066931-4365d14bab8c?auto=format&fit=crop&w=1080&q=80";
+
       const igBase = `https://graph.facebook.com/v21.0/${encodeURIComponent(
         socialCfg.instagramAccountId
       )}`;
+
       const containerRes = await fetch(`${igBase}/media`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -330,28 +502,95 @@ async function dispatchToExternalSocial(socialPost, socialCfg) {
           caption: socialPost.caption,
           access_token: socialCfg.instagramAccessToken,
         }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(15000),
       });
       const containerJson = await containerRes.json().catch(() => ({}));
+
       if (containerRes.ok && containerJson.id) {
-        const publishRes = await fetch(`${igBase}/media_publish`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            creation_id: containerJson.id,
-            access_token: socialCfg.instagramAccessToken,
-          }),
-          signal: AbortSignal.timeout(10000),
-        });
-        const publishJson = await publishRes.json().catch(() => ({}));
-        if (publishRes.ok && publishJson.id) {
-          results.dispatched = true;
-          results.deliveryChannel = "meta_graph_api";
-          results.externalPostId = publishJson.id;
+        const creationId = containerJson.id;
+        let containerFailed = null;
+
+        // Poll Instagram container status until FINISHED (avoids error 9007 "Media ID is not available")
+        for (let attempt = 0; attempt < 8; attempt++) {
+          await sleep(2000);
+          try {
+            const stRes = await fetch(
+              `https://graph.facebook.com/v21.0/${encodeURIComponent(
+                creationId
+              )}?fields=status_code,status&access_token=${encodeURIComponent(
+                socialCfg.instagramAccessToken
+              )}`,
+              { signal: AbortSignal.timeout(8000) }
+            );
+            const stJson = await stRes.json().catch(() => ({}));
+            const code = String(stJson.status_code || "").toUpperCase();
+            if (!code || code === "FINISHED") {
+              break;
+            }
+            if (code === "ERROR" || code === "EXPIRED") {
+              containerFailed =
+                stJson.status ||
+                `Instagram media processing failed (${code}). Ensure image URL is a public JPEG/PNG.`;
+              break;
+            }
+          } catch {
+            break;
+          }
+        }
+
+        if (containerFailed) {
+          results.error = containerFailed;
         } else {
-          results.error =
-            publishJson?.error?.message ||
-            `Instagram Publish API HTTP ${publishRes.status}`;
+          let publishRes = await fetch(`${igBase}/media_publish`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              creation_id: creationId,
+              access_token: socialCfg.instagramAccessToken,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+          let publishJson = await publishRes.json().catch(() => ({}));
+
+          // One extra retry if IG container needed a couple more seconds
+          if (!publishRes.ok && publishJson?.error?.code === 9007) {
+            await sleep(3000);
+            publishRes = await fetch(`${igBase}/media_publish`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                creation_id: creationId,
+                access_token: socialCfg.instagramAccessToken,
+              }),
+              signal: AbortSignal.timeout(15000),
+            });
+            publishJson = await publishRes.json().catch(() => ({}));
+          }
+
+          if (publishRes.ok && publishJson.id) {
+            results.dispatched = true;
+            results.deliveryChannel = "meta_graph_api";
+            results.externalPostId = publishJson.id;
+            results.error = null;
+            try {
+              const permRes = await fetch(
+                `https://graph.facebook.com/v21.0/${encodeURIComponent(
+                  publishJson.id
+                )}?fields=permalink&access_token=${encodeURIComponent(
+                  socialCfg.instagramAccessToken
+                )}`,
+                { signal: AbortSignal.timeout(6000) }
+              );
+              const permJson = await permRes.json().catch(() => ({}));
+              if (permJson.permalink) results.externalUrl = permJson.permalink;
+            } catch {
+              // permalink optional
+            }
+          } else {
+            results.error =
+              publishJson?.error?.message ||
+              `Instagram Publish API HTTP ${publishRes.status}`;
+          }
         }
       } else {
         results.error =
@@ -364,7 +603,7 @@ async function dispatchToExternalSocial(socialPost, socialCfg) {
   }
 
   // 2. Omnichannel Webhook Automation (Make / Zapier / n8n / Custom)
-  if (socialCfg.webhookUrl && String(socialCfg.webhookUrl).trim()) {
+  if (hasWebhook) {
     try {
       const whRes = await fetch(String(socialCfg.webhookUrl).trim(), {
         method: "POST",
@@ -382,15 +621,16 @@ async function dispatchToExternalSocial(socialPost, socialCfg) {
       });
       if (whRes.ok) {
         results.dispatched = true;
+        results.error = null;
         results.deliveryChannel =
           results.deliveryChannel === "meta_graph_api"
             ? "meta_graph_api+webhook"
             : "webhook_automation";
-      } else if (!results.error) {
+      } else if (!results.dispatched && !results.error) {
         results.error = `Automation Webhook HTTP ${whRes.status}`;
       }
     } catch (err) {
-      if (!results.error) {
+      if (!results.dispatched && !results.error) {
         results.error = `Webhook error: ${err.message}`;
       }
     }
@@ -402,10 +642,7 @@ async function dispatchToExternalSocial(socialPost, socialCfg) {
 async function upsertSocialPostForBlog(blog, platform, options = {}) {
   await ensureSocialPostsTable();
   const blogCfg = db.getSettings("blog_config") || {};
-  const socialCfg = {
-    ...DEFAULT_SOCIAL_CONFIG,
-    ...(db.getSettings("social_config") || {}),
-  };
+  const socialCfg = await loadSocialConfig();
 
   const existingRes = blog.id
     ? await db.query(
@@ -433,44 +670,62 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
     caption: preserveCaption,
     hashtags: options.hashtags,
     imageUrl:
-      options.imageUrl !== undefined
+      options.imageUrl !== undefined && options.imageUrl !== ""
         ? options.imageUrl
         : existingParsed?.imageUrl || blog.featured_image || "",
-    customEdited: hasExplicitOverride || Boolean(existingParsed?.customEdited && !options.forceOverwrite),
+    customEdited:
+      hasExplicitOverride ||
+      Boolean(existingParsed?.customEdited && !options.forceOverwrite),
   });
 
-  const shouldPublish =
+  const shouldAttemptExternalPublish =
     options.forcePublish ||
     (blog.status === "published" && socialCfg.autoPublishOnBlogPublish !== false);
 
-  let nextStatus = shouldPublish
-    ? "published"
-    : existingParsed?.status === "published" && blog.status === "published"
-    ? "published"
-    : blog.status === "published"
-    ? "published"
-    : "draft";
-
+  let nextStatus = existingParsed?.status === "published" ? "published" : "draft";
   let dispatchInfo = {
+    dispatched: Boolean(existingParsed?.externalPostId),
     deliveryChannel: existingParsed?.deliveryChannel || "studio_feed",
     externalPostId: existingParsed?.externalPostId || null,
+    externalUrl: existingParsed?.externalUrl || null,
     publishedAt: existingParsed?.publishedAt || null,
-    lastDispatchError: null,
+    lastDispatchError: existingParsed?.lastDispatchError || null,
   };
 
-  if (shouldPublish && (!existingParsed || existingParsed.status !== "published" || options.forcePublish)) {
+  // Avoid duplicate re-posting to Meta if already externally published unless forceRepublish is true
+  const alreadyExternallyPublished = Boolean(
+    existingParsed?.externalPostId && existingParsed?.status === "published"
+  );
+
+  if (
+    shouldAttemptExternalPublish &&
+    (!alreadyExternallyPublished || options.forceRepublish)
+  ) {
     const dispatched = await dispatchToExternalSocial(built, socialCfg);
-    dispatchInfo = {
-      deliveryChannel: dispatched.deliveryChannel,
-      externalPostId: dispatched.externalPostId,
-      publishedAt: dispatched.publishedAt,
-      lastDispatchError: dispatched.error,
-    };
-    if (dispatched.error) {
-      db.updateSettings("social_config", {
-        ...socialCfg,
+    if (dispatched.dispatched) {
+      nextStatus = "published";
+      dispatchInfo = {
+        dispatched: true,
+        deliveryChannel: dispatched.deliveryChannel,
+        externalPostId: dispatched.externalPostId,
+        externalUrl: dispatched.externalUrl,
+        publishedAt: dispatched.publishedAt,
+        lastDispatchError: null,
+      };
+    } else {
+      // Keep as draft if external publish failed or account isn't connected yet so user sees exact status
+      nextStatus = "draft";
+      dispatchInfo = {
+        dispatched: false,
+        deliveryChannel: "studio_feed",
+        externalPostId: existingParsed?.externalPostId || null,
+        externalUrl: existingParsed?.externalUrl || null,
+        publishedAt: existingParsed?.publishedAt || null,
         lastDispatchError: dispatched.error,
-      });
+      };
+      if (dispatched.error && !dispatched.notConfigured) {
+        await saveSocialConfig({ lastDispatchError: dispatched.error });
+      }
     }
   }
 
@@ -505,10 +760,7 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
 }
 
 async function syncBlogToSocialChannels(blog, socialOptions = {}) {
-  const socialCfg = {
-    ...DEFAULT_SOCIAL_CONFIG,
-    ...(db.getSettings("social_config") || {}),
-  };
+  const socialCfg = await loadSocialConfig();
 
   const doInstagram =
     socialOptions.enableInstagram !== undefined
@@ -526,6 +778,7 @@ async function syncBlogToSocialChannels(blog, socialOptions = {}) {
       imageUrl: socialOptions.imageUrl ?? blog.featured_image,
       forceOverwrite: Boolean(socialOptions.forceOverwrite),
       forcePublish: Boolean(socialOptions.forcePublish),
+      forceRepublish: Boolean(socialOptions.forceRepublish),
     });
     synced.push(ig);
   }
@@ -535,13 +788,13 @@ async function syncBlogToSocialChannels(blog, socialOptions = {}) {
       imageUrl: socialOptions.imageUrl ?? blog.featured_image,
       forceOverwrite: Boolean(socialOptions.forceOverwrite),
       forcePublish: Boolean(socialOptions.forcePublish),
+      forceRepublish: Boolean(socialOptions.forceRepublish),
     });
     synced.push(fb);
   }
 
   if (synced.length > 0) {
-    db.updateSettings("social_config", {
-      ...socialCfg,
+    await saveSocialConfig({
       lastSyncAt: new Date().toISOString(),
       lastSyncedCount: synced.length,
     });
@@ -992,10 +1245,27 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
       await triggerMainSiteSync();
     }
 
-    return sendJsonResponse(res, "success", "Blog post saved and synced across channels.", {
+    const liveDispatched = socialPosts.filter((sp) => sp.status === "published" && sp.dispatched);
+    const socialErrors = socialPosts
+      .filter((sp) => sp.lastDispatchError)
+      .map((sp) => `${sp.platform === "instagram" ? "IG" : "FB"}: ${sp.lastDispatchError}`);
+
+    const createMsg =
+      initialStatus === "published"
+        ? liveDispatched.length > 0 && socialErrors.length === 0
+          ? `Published to Website Blog + Live on ${liveDispatched
+              .map((s) => (s.platform === "instagram" ? "Instagram" : "Facebook"))
+              .join(" & ")}!`
+          : socialErrors.length > 0
+          ? `Blog published live. Social status: ${socialErrors.join(" | ")}`
+          : "Blog published and social drafts populated."
+        : "Blog draft saved and social posts populated.";
+
+    return sendJsonResponse(res, "success", createMsg, {
       id: postId,
       slug: resolvedSlug,
       socialPosts,
+      socialWarnings: socialErrors,
     });
   } catch (err) {
     console.error("Blog Create API Error:", err);
@@ -1055,19 +1325,28 @@ router.post(syncPaths, requireMutatingAuth, async (req, res) => {
     }
 
     const syncedOk = await triggerMainSiteSync();
-    const socialSuffix =
-      socialSynced.length > 0
-        ? ` + populated Instagram & Facebook (${socialSynced.length} social post${socialSynced.length === 1 ? "" : "s"}).`
-        : ".";
+    const liveSocial = socialSynced.filter((sp) => sp.status === "published" && sp.dispatched);
+    const socialErrors = socialSynced
+      .filter((sp) => sp.lastDispatchError)
+      .map((sp) => `${sp.platform === "instagram" ? "IG" : "FB"}: ${sp.lastDispatchError}`);
 
-    return sendJsonResponse(
-      res,
-      "success",
-      syncedOk
-        ? `Article published to live website${socialSuffix}`
-        : `Article published on Editorial Ledger${socialSuffix}`,
-      { socialPosts: socialSynced }
-    );
+    let syncMsg = syncedOk
+      ? "Article published to live website"
+      : "Article published on Editorial Ledger";
+
+    if (liveSocial.length > 0) {
+      syncMsg += ` + published live on ${liveSocial
+        .map((s) => (s.platform === "instagram" ? "Instagram" : "Facebook"))
+        .join(" & ")}!`;
+    }
+    if (socialErrors.length > 0) {
+      syncMsg += ` (Social note: ${socialErrors.join(" | ")})`;
+    }
+
+    return sendJsonResponse(res, "success", syncMsg, {
+      socialPosts: socialSynced,
+      socialWarnings: socialErrors,
+    });
   } catch (err) {
     console.error("Blog Sync API Error:", err);
     return sendJsonResponse(res, "error", "Failed to sync article.", null, 500);
@@ -1154,10 +1433,7 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
     const query = `UPDATE blog_posts SET ${updates.join(", ")} WHERE id = $${paramCount}`;
     await db.query(query, params);
 
-    const socialCfg = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const socialCfg = await loadSocialConfig();
 
     let socialPosts = [];
     if (socialCfg.autoSyncOnBlogUpdate !== false || socialOptions) {
@@ -1339,16 +1615,14 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
 
   try {
     await ensureSocialPostsTable();
-    const socialCfg = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const socialCfg = await loadSocialConfig();
     const blogCfg = db.getSettings("blog_config") || {};
     const targetPlatforms = Array.isArray(body.platforms) && body.platforms.length > 0
       ? body.platforms.map((p) => String(p).toLowerCase())
       : [String(body.platform || "instagram").toLowerCase()];
 
     const savedPosts = [];
+    const dispatchErrors = [];
 
     for (const plt of targetPlatforms) {
       if (plt !== "instagram" && plt !== "facebook") continue;
@@ -1362,7 +1636,7 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
             .filter(Boolean)
         : buildHashtags([], body.category || "Engineering", socialCfg.defaultHashtags);
 
-      const status = body.status === "published" ? "published" : "draft";
+      let finalStatus = body.status === "published" && !body.publishNow ? "published" : "draft";
       const existingId = targetPlatforms.length === 1 && body.id ? body.id : null;
 
       let existingParsed = {};
@@ -1402,17 +1676,32 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
           plt === "instagram"
             ? socialCfg.instagramHandle || "@devinquire"
             : socialCfg.facebookPageName || "DevInquire",
-        status,
+        status: finalStatus,
         customEdited: true,
         updatedAt: new Date().toISOString(),
       };
 
-      if (status === "published" && body.publishNow) {
+      if (body.publishNow) {
         const dispatched = await dispatchToExternalSocial(payloadObj, socialCfg);
-        payloadObj.deliveryChannel = dispatched.deliveryChannel;
-        payloadObj.externalPostId = dispatched.externalPostId;
-        payloadObj.publishedAt = dispatched.publishedAt;
-        payloadObj.lastDispatchError = dispatched.error;
+        if (dispatched.dispatched) {
+          finalStatus = "published";
+          payloadObj.status = "published";
+          payloadObj.dispatched = true;
+          payloadObj.deliveryChannel = dispatched.deliveryChannel;
+          payloadObj.externalPostId = dispatched.externalPostId;
+          payloadObj.externalUrl = dispatched.externalUrl;
+          payloadObj.publishedAt = dispatched.publishedAt;
+          payloadObj.lastDispatchError = null;
+        } else {
+          finalStatus = "draft";
+          payloadObj.status = "draft";
+          payloadObj.lastDispatchError = dispatched.error;
+          dispatchErrors.push(
+            `${plt === "instagram" ? "Instagram" : "Facebook"}: ${
+              dispatched.error || "Publish failed"
+            }`
+          );
+        }
       }
 
       const payloadStr = JSON.stringify(payloadObj);
@@ -1421,7 +1710,7 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
       if (existingId) {
         await db.query(
           "UPDATE social_posts SET title = $1, caption = $2, status = $3, payload = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
-          [resolvedTitle, payloadObj.caption, status, payloadStr, existingId]
+          [resolvedTitle, payloadObj.caption, finalStatus, payloadStr, existingId]
         );
       } else {
         const ins = await db.query(
@@ -1431,7 +1720,7 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
             plt,
             resolvedTitle,
             payloadObj.caption,
-            status,
+            finalStatus,
             payloadStr,
           ]
         );
@@ -1444,9 +1733,28 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
       });
     }
 
-    return sendJsonResponse(res, "success", "Social post saved.", {
-      posts: savedPosts,
-    });
+    if (body.publishNow && dispatchErrors.length > 0) {
+      return sendJsonResponse(
+        res,
+        "error",
+        `Saved draft, but live publish failed — ${dispatchErrors.join(" | ")}`,
+        { posts: savedPosts, errors: dispatchErrors },
+        400
+      );
+    }
+
+    return sendJsonResponse(
+      res,
+      "success",
+      body.publishNow
+        ? `Published live to ${savedPosts
+            .map((p) => (p.platform === "instagram" ? "Instagram" : "Facebook"))
+            .join(" & ")}!`
+        : "Social post saved.",
+      {
+        posts: savedPosts,
+      }
+    );
   } catch (err) {
     console.error("Social Save API Error:", err);
     return sendJsonResponse(res, "error", "Failed to save social post.", null, 500);
@@ -1462,10 +1770,7 @@ router.post(socialPublishPaths, requireMutatingAuth, async (req, res) => {
 
   try {
     await ensureSocialPostsTable();
-    const socialCfg = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const socialCfg = await loadSocialConfig();
     const foundRes = await db.query(
       "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts WHERE id = $1 LIMIT 1",
       [id]
@@ -1477,13 +1782,37 @@ router.post(socialPublishPaths, requireMutatingAuth, async (req, res) => {
 
     const parsed = parseSocialRow(row);
     const dispatched = await dispatchToExternalSocial(parsed, socialCfg);
+    const platformLabel = parsed.platform === "instagram" ? "Instagram" : "Facebook";
+
+    if (!dispatched.dispatched) {
+      const failedPayload = {
+        ...parsed,
+        status: "draft",
+        lastDispatchError: dispatched.error || `Could not publish to ${platformLabel}.`,
+        updatedAt: new Date().toISOString(),
+      };
+      await db.query(
+        "UPDATE social_posts SET title = $1, caption = $2, status = $3, payload = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
+        [failedPayload.title, failedPayload.caption, "draft", JSON.stringify(failedPayload), row.id]
+      );
+      return sendJsonResponse(
+        res,
+        "error",
+        dispatched.error || `Failed to publish to ${platformLabel}.`,
+        failedPayload,
+        400
+      );
+    }
+
     const nextPayload = {
       ...parsed,
       status: "published",
+      dispatched: true,
       deliveryChannel: dispatched.deliveryChannel,
       externalPostId: dispatched.externalPostId,
+      externalUrl: dispatched.externalUrl,
       publishedAt: dispatched.publishedAt,
-      lastDispatchError: dispatched.error,
+      lastDispatchError: null,
       updatedAt: new Date().toISOString(),
     };
 
@@ -1492,13 +1821,10 @@ router.post(socialPublishPaths, requireMutatingAuth, async (req, res) => {
       [nextPayload.title, nextPayload.caption, "published", JSON.stringify(nextPayload), row.id]
     );
 
-    const platformLabel = parsed.platform === "instagram" ? "Instagram" : "Facebook";
     const msg =
       dispatched.deliveryChannel === "meta_graph_api"
-        ? `${platformLabel} post published live via Meta Graph API.`
-        : dispatched.deliveryChannel.includes("webhook")
-        ? `${platformLabel} post published and dispatched to automation webhook.`
-        : `${platformLabel} post marked Published in Editorial Studio.`;
+        ? `${platformLabel} post published live on ${platformLabel}!`
+        : `${platformLabel} post published via automation webhook!`;
 
     return sendJsonResponse(res, "success", msg, nextPayload);
   } catch (err) {
@@ -1588,10 +1914,7 @@ router.post(socialPopulateAllPaths, requireMutatingAuth, async (req, res) => {
 // Get Social & Omnichannel Automation Config
 router.get(socialConfigPaths, requireAuth, async (req, res) => {
   try {
-    const cfg = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const cfg = await loadSocialConfig();
     return sendJsonResponse(res, "success", "Social configuration retrieved.", cfg);
   } catch (err) {
     console.error("Social Config Get Error:", err);
@@ -1603,10 +1926,7 @@ router.get(socialConfigPaths, requireAuth, async (req, res) => {
 router.post(socialConfigPaths, requireMutatingAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const current = await loadSocialConfig();
 
     let hashtags = current.defaultHashtags;
     if (Array.isArray(body.defaultHashtags)) {
@@ -1618,12 +1938,36 @@ router.post(socialConfigPaths, requireMutatingAuth, async (req, res) => {
         .filter(Boolean);
     }
 
-    const updated = db.updateSettings("social_config", {
+    // Never wipe out already-connected Meta tokens if client state was stale (use /social/disconnect to clear)
+    const preserveIfBlank = (incoming, existing) =>
+      incoming !== undefined && String(incoming).trim() !== ""
+        ? String(incoming).trim()
+        : existing || "";
+
+    const updated = await saveSocialConfig({
       ...current,
       ...body,
+      metaAppId: preserveIfBlank(body.metaAppId, current.metaAppId),
+      metaAppSecret: preserveIfBlank(body.metaAppSecret, current.metaAppSecret),
+      facebookPageId: preserveIfBlank(body.facebookPageId, current.facebookPageId),
+      facebookAccessToken: preserveIfBlank(body.facebookAccessToken, current.facebookAccessToken),
+      instagramAccountId: preserveIfBlank(body.instagramAccountId, current.instagramAccountId),
+      instagramAccessToken: preserveIfBlank(
+        body.instagramAccessToken,
+        current.instagramAccessToken
+      ),
+      connectedPages:
+        Array.isArray(body.connectedPages) && body.connectedPages.length > 0
+          ? body.connectedPages
+          : current.connectedPages || [],
       defaultHashtags: hashtags,
     });
-    return sendJsonResponse(res, "success", "Instagram & Facebook automation settings saved.", updated);
+    return sendJsonResponse(
+      res,
+      "success",
+      "Instagram & Facebook automation settings saved.",
+      updated
+    );
   } catch (err) {
     console.error("Social Config Save Error:", err);
     return sendJsonResponse(res, "error", "Failed to save social configuration.", null, 500);
@@ -1744,35 +2088,42 @@ function applySelectedPageToConfig(currentCfg, connectedPages, preferredPageId =
   };
 }
 
-// 1. Generate Meta OAuth Login URL (for 1-Click Popup Connect)
+// 1. Generate Meta OAuth Login URL (Supports Both Popup & Same-Tab Redirect)
 router.post(socialOAuthUrlPaths, requireMutatingAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const current = await loadSocialConfig();
 
-    const metaAppId = String(body.metaAppId ?? current.metaAppId ?? process.env.META_APP_ID ?? "").trim();
-    const metaAppSecret = String(
-      body.metaAppSecret ?? current.metaAppSecret ?? process.env.META_APP_SECRET ?? ""
+    const metaAppId = String(
+      body.metaAppId || current.metaAppId || process.env.META_APP_ID || ""
     ).trim();
+    const metaAppSecret = String(
+      body.metaAppSecret || current.metaAppSecret || process.env.META_APP_SECRET || ""
+    ).trim();
+    const metaConfigId = String(body.metaConfigId ?? current.metaConfigId ?? "").trim();
+    const oauthScopeMode = body.oauthScopeMode || current.oauthScopeMode || "instagram_and_facebook";
+    const includeBusinessManagement = Boolean(
+      body.includeBusinessManagement ?? current.includeBusinessManagement
+    );
+    const mode = body.mode === "redirect" ? "redirect" : "popup";
 
     if (!metaAppId || !metaAppSecret) {
       return sendJsonResponse(
         res,
         "error",
-        "Enter your Meta App ID and Meta App Secret first (or use Quick Connect with an Access Token below).",
+        "Enter both your Meta App ID and Meta App Secret first (or paste a Graph Explorer Access Token in Instant Token Connect below).",
         null,
         400
       );
     }
 
-    // Persist App ID & Secret so callback can use them
-    db.updateSettings("social_config", {
-      ...current,
+    // Persist App ID & Secret to SQL immediately so any worker handling callback reads them
+    await saveSocialConfig({
       metaAppId,
       metaAppSecret,
+      metaConfigId,
+      oauthScopeMode,
+      includeBusinessManagement,
     });
 
     const origin = String(
@@ -1780,33 +2131,37 @@ router.post(socialOAuthUrlPaths, requireMutatingAuth, async (req, res) => {
     ).replace(/\/$/, "");
     const redirectUri = `${origin}/api/blog/social/oauth/callback`;
 
-    // Prune expired OAuth states (> 15m)
-    const cutoff = Date.now() - 15 * 60 * 1000;
-    for (const [k, val] of oauthStateStore.entries()) {
-      if (val.createdAt < cutoff) oauthStateStore.delete(k);
-    }
-
-    const state = crypto.randomBytes(20).toString("hex");
-    oauthStateStore.set(state, {
+    const state = createOAuthState({
       redirectUri,
-      createdAt: Date.now(),
+      returnOrigin: origin,
+      mode,
     });
 
-    const scopes = [
-      "pages_show_list",
-      "pages_read_engagement",
-      "pages_manage_posts",
-      "instagram_basic",
-      "instagram_content_publish",
-      "business_management",
-    ].join(",");
+    const scopeList =
+      oauthScopeMode === "facebook_only"
+        ? ["pages_show_list", "pages_read_engagement", "pages_manage_posts"]
+        : [
+            "pages_show_list",
+            "pages_read_engagement",
+            "pages_manage_posts",
+            "instagram_basic",
+            "instagram_content_publish",
+          ];
+    if (includeBusinessManagement) {
+      scopeList.push("business_management");
+    }
 
     const authUrl = new URL("https://www.facebook.com/v21.0/dialog/oauth");
     authUrl.searchParams.set("client_id", metaAppId);
     authUrl.searchParams.set("redirect_uri", redirectUri);
     authUrl.searchParams.set("state", state);
-    authUrl.searchParams.set("scope", scopes);
     authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("auth_type", "rerequest");
+    if (metaConfigId) {
+      authUrl.searchParams.set("config_id", metaConfigId);
+    } else {
+      authUrl.searchParams.set("scope", scopeList.join(","));
+    }
 
     return sendJsonResponse(res, "success", "Meta OAuth URL generated.", {
       authUrl: authUrl.toString(),
@@ -1818,15 +2173,28 @@ router.post(socialOAuthUrlPaths, requireMutatingAuth, async (req, res) => {
   }
 });
 
-// 2. Meta OAuth Callback (Popup Handler)
+// 2. Meta OAuth Callback (Stateless Multi-Worker + BroadcastChannel + Redirect Support)
 router.get(socialOAuthCallbackPaths, async (req, res) => {
-  const sendPopupHtml = (ok, message) => {
+  const { code, state, error, error_description } = req.query || {};
+  const stateEntry = verifyOAuthState(String(state || ""));
+
+  const finishOAuth = (ok, message) => {
+    const returnOrigin = stateEntry?.returnOrigin || `${req.protocol}://${req.get("host")}`;
+    if (stateEntry?.mode === "redirect") {
+      const target = `${returnOrigin}/?meta_oauth=${
+        ok ? "success" : "error"
+      }&meta_msg=${encodeURIComponent(String(message || ""))}#/blogs`;
+      return res.redirect(302, target);
+    }
+
     const safeMsg = String(message || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const payloadJson = JSON.stringify({
       type: "DI_META_OAUTH_RESULT",
       status: ok ? "success" : "error",
       message: String(message || ""),
+      ts: Date.now(),
     });
+    const dashboardLink = `${returnOrigin}/#/blogs`;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     return res.status(200).send(`<!DOCTYPE html>
 <html>
@@ -1835,11 +2203,11 @@ router.get(socialOAuthCallbackPaths, async (req, res) => {
   <title>DevInquire — Meta Connection</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0f1117; color: #fff; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; padding: 24px; }
-    .card { max-width: 420px; background: #1c1e26; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 28px; }
+    .card { max-width: 440px; background: #1c1e26; border: 1px solid rgba(255,255,255,0.1); border-radius: 20px; padding: 28px; }
     .badge { display: inline-block; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600; background: ${ok ? "rgba(40,205,65,0.15)" : "rgba(255,59,48,0.15)"}; color: ${ok ? "#30D158" : "#FF453A"}; margin-bottom: 12px; }
     h2 { margin: 0 0 8px; font-size: 18px; }
     p { margin: 0 0 18px; font-size: 13px; color: #a0a6b5; line-height: 1.5; }
-    button { background: #4e45e1; color: #fff; border: 0; border-radius: 10px; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn { display: inline-block; background: #4e45e1; color: #fff; text-decoration: none; border: 0; border-radius: 10px; padding: 10px 20px; font-size: 13px; font-weight: 600; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -1847,36 +2215,43 @@ router.get(socialOAuthCallbackPaths, async (req, res) => {
     <div class="badge">${ok ? "Connected" : "Connection Failed"}</div>
     <h2>${ok ? "Facebook & Instagram Linked" : "Could Not Complete OAuth"}</h2>
     <p>${safeMsg}</p>
-    <button onclick="window.close()">Close Window</button>
+    <button class="btn" onclick="closeOrReturn()">Return to Dashboard</button>
   </div>
   <script>
+    const payload = ${payloadJson};
     try {
-      if (window.opener) {
-        window.opener.postMessage(${payloadJson}, "*");
+      if (typeof BroadcastChannel !== "undefined") {
+        const bc = new BroadcastChannel("di_meta_oauth");
+        bc.postMessage(payload);
       }
     } catch (e) {}
-    ${ok ? "setTimeout(() => window.close(), 1200);" : ""}
+    try {
+      localStorage.setItem("di_meta_oauth_event", JSON.stringify(payload));
+    } catch (e) {}
+    try {
+      if (window.opener) {
+        window.opener.postMessage(payload, "*");
+      }
+    } catch (e) {}
+    function closeOrReturn() {
+      window.close();
+      setTimeout(function() { window.location.href = ${JSON.stringify(dashboardLink)}; }, 300);
+    }
+    ${ok ? "setTimeout(function() { window.close(); }, 1200);" : ""}
   </script>
 </body>
 </html>`);
   };
 
-  const { code, state, error, error_description } = req.query || {};
   if (error) {
-    return sendPopupHtml(false, error_description || String(error));
+    return finishOAuth(false, error_description || String(error));
   }
-  if (!code || !state || !oauthStateStore.has(String(state))) {
-    return sendPopupHtml(false, "Invalid or expired OAuth state. Please click Connect again.");
+  if (!code || !stateEntry) {
+    return finishOAuth(false, "Invalid or expired OAuth state. Please click Connect again.");
   }
-
-  const stateEntry = oauthStateStore.get(String(state));
-  oauthStateStore.delete(String(state));
 
   try {
-    const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const current = await loadSocialConfig();
     const appId = current.metaAppId || process.env.META_APP_ID;
     const appSecret = current.metaAppSecret || process.env.META_APP_SECRET;
 
@@ -1887,11 +2262,11 @@ router.get(socialOAuthCallbackPaths, async (req, res) => {
     tokenUrl.searchParams.set("code", String(code));
 
     const tokenRes = await fetch(tokenUrl.toString(), {
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(12000),
     });
     const tokenJson = await tokenRes.json().catch(() => ({}));
     if (!tokenRes.ok || !tokenJson.access_token) {
-      return sendPopupHtml(
+      return finishOAuth(
         false,
         tokenJson?.error?.message || "Failed to exchange authorization code with Meta."
       );
@@ -1899,17 +2274,17 @@ router.get(socialOAuthCallbackPaths, async (req, res) => {
 
     const pages = await discoverMetaAccounts(tokenJson.access_token, appId, appSecret);
     const nextCfg = applySelectedPageToConfig(current, pages);
-    db.updateSettings("social_config", nextCfg);
+    await saveSocialConfig(nextCfg);
 
     const igNote = nextCfg.instagramAccountId
       ? ` and Instagram (${nextCfg.instagramHandle})`
-      : " (no linked Instagram Business account detected on this Page)";
-    return sendPopupHtml(
+      : " (no linked Instagram Business account detected on this Page — link IG in Facebook Page Settings to enable IG)";
+    return finishOAuth(
       true,
       `Connected Facebook Page "${nextCfg.facebookPageName}"${igNote}.`
     );
   } catch (err) {
-    return sendPopupHtml(false, err.message || "Meta account discovery failed.");
+    return finishOAuth(false, err.message || "Meta account discovery failed.");
   }
 });
 
@@ -1921,12 +2296,9 @@ router.post(socialDiscoverPaths, requireMutatingAuth, async (req, res) => {
   }
 
   try {
-    const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
-    const resolvedAppId = String(metaAppId ?? current.metaAppId ?? "").trim();
-    const resolvedSecret = String(metaAppSecret ?? current.metaAppSecret ?? "").trim();
+    const current = await loadSocialConfig();
+    const resolvedAppId = String(metaAppId || current.metaAppId || "").trim();
+    const resolvedSecret = String(metaAppSecret || current.metaAppSecret || "").trim();
 
     const pages = await discoverMetaAccounts(accessToken, resolvedAppId, resolvedSecret);
     const nextCfg = applySelectedPageToConfig(
@@ -1937,7 +2309,7 @@ router.post(socialDiscoverPaths, requireMutatingAuth, async (req, res) => {
       },
       pages
     );
-    const saved = db.updateSettings("social_config", nextCfg);
+    const saved = await saveSocialConfig(nextCfg);
 
     const igPart = saved.instagramAccountId
       ? ` + Instagram ${saved.instagramHandle}`
@@ -1969,10 +2341,7 @@ router.post(socialSelectPagePaths, requireMutatingAuth, async (req, res) => {
   }
 
   try {
-    const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
+    const current = await loadSocialConfig();
     const pages = Array.isArray(current.connectedPages) ? current.connectedPages : [];
     const found = pages.find((p) => String(p.pageId) === String(pageId));
     if (!found) {
@@ -1980,7 +2349,7 @@ router.post(socialSelectPagePaths, requireMutatingAuth, async (req, res) => {
     }
 
     const nextCfg = applySelectedPageToConfig(current, pages, pageId);
-    const saved = db.updateSettings("social_config", nextCfg);
+    const saved = await saveSocialConfig(nextCfg);
     return sendJsonResponse(
       res,
       "success",
@@ -1995,10 +2364,15 @@ router.post(socialSelectPagePaths, requireMutatingAuth, async (req, res) => {
 // 5. Verify / Test Live Facebook Page, Instagram Business & Webhook Connection
 router.post(socialVerifyPaths, requireMutatingAuth, async (req, res) => {
   try {
+    const savedCfg = await loadSocialConfig();
+    const body = req.body || {};
     const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-      ...(req.body || {}),
+      ...savedCfg,
+      facebookPageId: body.facebookPageId || savedCfg.facebookPageId,
+      facebookAccessToken: body.facebookAccessToken || savedCfg.facebookAccessToken,
+      instagramAccountId: body.instagramAccountId || savedCfg.instagramAccountId,
+      instagramAccessToken: body.instagramAccessToken || savedCfg.instagramAccessToken,
+      webhookUrl: body.webhookUrl !== undefined ? body.webhookUrl : savedCfg.webhookUrl,
     };
 
     const status = {
@@ -2058,8 +2432,7 @@ router.post(socialVerifyPaths, requireMutatingAuth, async (req, res) => {
     }
 
     if (status.facebook.connected || status.instagram.connected || status.webhook.configured) {
-      db.updateSettings("social_config", {
-        ...db.getSettings("social_config"),
+      await saveSocialConfig({
         facebookPageName: status.facebook.name || current.facebookPageName,
         instagramHandle: status.instagram.username || current.instagramHandle,
         lastVerifiedAt: new Date().toISOString(),
@@ -2089,11 +2462,8 @@ router.post(socialVerifyPaths, requireMutatingAuth, async (req, res) => {
 // 6. Disconnect Meta Accounts
 router.post(socialDisconnectPaths, requireMutatingAuth, async (req, res) => {
   try {
-    const current = {
-      ...DEFAULT_SOCIAL_CONFIG,
-      ...(db.getSettings("social_config") || {}),
-    };
-    const cleared = db.updateSettings("social_config", {
+    const current = await loadSocialConfig();
+    const cleared = await saveSocialConfig({
       ...current,
       instagramAccountId: "",
       instagramAccessToken: "",

@@ -56,8 +56,10 @@ export interface SocialPost {
   authorName?: string;
   accountHandle?: string;
   status: 'draft' | 'published';
+  dispatched?: boolean;
   deliveryChannel?: string;
   externalPostId?: string | null;
+  externalUrl?: string | null;
   publishedAt?: string | null;
   lastDispatchError?: string | null;
   customEdited?: boolean;

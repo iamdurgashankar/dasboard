@@ -14,7 +14,7 @@
     "backend": "npm --prefix server start",
     "seed": "npm --prefix server run seed",
     "cron:generate-blog": "node server/cron/generateBlog.js",
-    "postinstall": "npm --prefix server install --omit=dev",
+    "postinstall": "npm --prefix server install --omit=dev && vite build",
     "build": "tsc --noEmit && vite build",
     "build:ci": "CI=true tsc --noEmit --pretty false && CI=true vite build",
     "start": "node server.js",
