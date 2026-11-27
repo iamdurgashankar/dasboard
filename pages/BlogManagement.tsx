@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { SocialPlatform, SocialPost } from '../types';
 import { generateBlogPostDraft } from '../services/geminiService';
 import { api } from '../services/api';
@@ -215,6 +215,10 @@ const BlogManagement: React.FC = () => {
   const [isSavingSocialConfig, setIsSavingSocialConfig] = useState(false);
   const [socialHashtagInput, setSocialHashtagInput] = useState('');
   const [isPopulatingSocial, setIsPopulatingSocial] = useState(false);
+  const [isDeduplicating, setIsDeduplicating] = useState(false);
+  const savingLockRef = useRef(false);
+  const automationLockRef = useRef(false);
+  const socialPublishLockRef = useRef(false);
   const [quickConnectToken, setQuickConnectToken] = useState('');
   const [isConnectingOAuth, setIsConnectingOAuth] = useState(false);
   const [isDiscoveringToken, setIsDiscoveringToken] = useState(false);
@@ -473,6 +477,8 @@ const BlogManagement: React.FC = () => {
   };
 
   const handleRunAutomationNow = async () => {
+    if (automationLockRef.current) return;
+    automationLockRef.current = true;
     setIsRunningAutomation(true);
     setError(null);
     try {
@@ -494,7 +500,24 @@ const BlogManagement: React.FC = () => {
     } catch (err: any) {
       setError(err?.message || 'Failed to pull tech news from daily.dev.');
     } finally {
+      automationLockRef.current = false;
       setIsRunningAutomation(false);
+    }
+  };
+
+  const handleDeduplicatePosts = async () => {
+    setIsDeduplicating(true);
+    setError(null);
+    try {
+      const res = await api.blog.deduplicatePosts();
+      if (res.status === 'success') {
+        await Promise.all([fetchBlogs(), fetchSocialPosts()]);
+        showToast(res.message || 'Removed duplicate posts.');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to remove duplicate posts.');
+    } finally {
+      setIsDeduplicating(false);
     }
   };
 
@@ -686,7 +709,8 @@ const BlogManagement: React.FC = () => {
   };
 
   const handleSave = async (publishImmediately: boolean = false) => {
-    if (!currentBlog.title.trim()) return;
+    if (!currentBlog.title.trim() || savingLockRef.current) return;
+    savingLockRef.current = true;
     setIsSavingPost(true);
     const targetStatus = publishImmediately ? 'published' : currentBlog.status;
     const socialOptions = {
@@ -711,9 +735,6 @@ const BlogManagement: React.FC = () => {
       if (editingId) {
         apiRes = await api.blog.update({ id: editingId, ...payload });
         if (apiRes.status !== 'success') throw new Error(apiRes.message);
-        if (targetStatus === 'published' && blogConfig.autoSyncOnPublish) {
-          apiRes = await api.blog.sync(editingId);
-        }
       } else {
         apiRes = await api.blog.create(payload);
         if (apiRes.status !== 'success') throw new Error(apiRes.message);
@@ -739,6 +760,7 @@ const BlogManagement: React.FC = () => {
     } catch (err: any) {
       setError(err.message || 'Failed to save article.');
     } finally {
+      savingLockRef.current = false;
       setIsSavingPost(false);
     }
   };
@@ -841,6 +863,8 @@ const BlogManagement: React.FC = () => {
   };
 
   const handlePublishSocialPost = async (post: SocialPost) => {
+    if (socialPublishLockRef.current) return;
+    socialPublishLockRef.current = true;
     setPublishingSocialId(post.id);
     setError(null);
     try {
@@ -856,6 +880,7 @@ const BlogManagement: React.FC = () => {
       await fetchSocialPosts();
       setError(err.message || 'Failed to publish social post.');
     } finally {
+      socialPublishLockRef.current = false;
       setPublishingSocialId(null);
     }
   };
@@ -1716,6 +1741,21 @@ const BlogManagement: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 flex-wrap">
+            <button
+              type="button"
+              disabled={isDeduplicating}
+              onClick={handleDeduplicatePosts}
+              className="h-9 px-3 apple-secondary-btn rounded-[10px] text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+              title="Remove any duplicate Blog, Instagram, or Facebook entries"
+            >
+              <i
+                className={`fas ${
+                  isDeduplicating ? 'fa-spinner fa-spin' : 'fa-broom'
+                } text-[var(--apple-blue)] text-xs`}
+              ></i>
+              <span>{isDeduplicating ? 'Cleaning…' : 'Remove Duplicates'}</span>
+            </button>
+
             <button
               type="button"
               disabled={isPopulatingSocial}

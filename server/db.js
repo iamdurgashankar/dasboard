@@ -601,15 +601,31 @@ function executeEmbeddedQuery(text, params = []) {
         parsedTags = [];
       }
     }
-    const meta = params[6] && typeof params[6] === "object" ? params[6] : {};
+    const hasSlugParam = typeof params[6] === "string";
+    const meta =
+      hasSlugParam
+        ? params[7] && typeof params[7] === "object"
+          ? params[7]
+          : {}
+        : params[6] && typeof params[6] === "object"
+          ? params[6]
+          : {};
     const rawTitle = String(params[0] || `Post ${id}`);
     const generatedSlug =
+      (hasSlugParam ? params[6] : null) ||
       meta.slug ||
       rawTitle
         .toLowerCase()
         .trim()
         .replace(/[^a-z0-9-]+/g, "-")
         .replace(/^-+|-+$/g, "");
+    const existingDup = store.blog_posts.find(
+      (b) =>
+        String(b.slug || "").toLowerCase() === String(generatedSlug).toLowerCase(),
+    );
+    if (existingDup) {
+      return { rows: [{ id: existingDup.id, slug: existingDup.slug }], rowCount: 0 };
+    }
     const defaultAuthor =
       store.settings?.blog_config?.defaultAuthor || "DevInquire Editorial";
 
@@ -834,11 +850,24 @@ function executeEmbeddedQuery(text, params = []) {
   }
 
   if (qLower.startsWith("insert into social_posts")) {
+    const incomingBlogId =
+      params[0] !== undefined && params[0] !== null ? Number(params[0]) : null;
+    const incomingPlatform = String(params[1] || "instagram").toLowerCase();
+    if (incomingBlogId !== null) {
+      const existingSp = store.social_posts.find(
+        (sp) =>
+          Number(sp.blog_id) === incomingBlogId &&
+          String(sp.platform || "").toLowerCase() === incomingPlatform,
+      );
+      if (existingSp) {
+        return { rows: [{ id: existingSp.id }], rowCount: 0 };
+      }
+    }
     const id = nextId(store.social_posts);
     store.social_posts.push({
       id,
-      blog_id: params[0] !== undefined && params[0] !== null ? Number(params[0]) : null,
-      platform: params[1] || "instagram",
+      blog_id: incomingBlogId,
+      platform: incomingPlatform,
       title: params[2] || "",
       caption: params[3] || "",
       status: params[4] || "draft",
@@ -880,6 +909,40 @@ function executeEmbeddedQuery(text, params = []) {
       );
     }
     saveEmbeddedStore();
+    return { rows: [], rowCount: 1 };
+  }
+
+  // AUTOMATION DISTRIBUTED LOCKS queries
+  if (!Array.isArray(store.automation_locks)) store.automation_locks = [];
+
+  if (qLower.startsWith("delete from automation_locks")) {
+    const lockName = String(params[0] || "");
+    if (qLower.includes("locked_until <")) {
+      const cutoff = Number(params[1] || 0);
+      store.automation_locks = store.automation_locks.filter(
+        (l) => !(l.lock_name === lockName && Number(l.locked_until) < cutoff),
+      );
+    } else {
+      store.automation_locks = store.automation_locks.filter(
+        (l) => l.lock_name !== lockName,
+      );
+    }
+    return { rows: [], rowCount: 1 };
+  }
+
+  if (qLower.startsWith("insert into automation_locks")) {
+    const lockName = String(params[0] || "");
+    const exists = store.automation_locks.find((l) => l.lock_name === lockName);
+    if (exists) {
+      const dupErr = new Error("Duplicate lock entry");
+      dupErr.code = "ER_DUP_ENTRY";
+      throw dupErr;
+    }
+    store.automation_locks.push({
+      lock_name: lockName,
+      locked_until: Number(params[1] || 0),
+      owner: String(params[2] || "local"),
+    });
     return { rows: [], rowCount: 1 };
   }
 
@@ -1377,6 +1440,11 @@ export const db = {
           created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         )`,
+        `CREATE TABLE IF NOT EXISTS automation_locks (
+          lock_name VARCHAR(120) PRIMARY KEY,
+          locked_until BIGINT NOT NULL,
+          owner VARCHAR(100) NOT NULL
+        )`,
       ];
 
       for (const ddl of ddlStatements) {
@@ -1402,7 +1470,8 @@ export const db = {
           "ALTER TABLE projects ADD COLUMN assignedViewer VARCHAR(150) DEFAULT NULL",
           "ALTER TABLE projects ADD COLUMN dueDate VARCHAR(50) DEFAULT NULL",
           "ALTER TABLE projects ADD COLUMN updates JSON",
-          "ALTER TABLE blog_posts ADD COLUMN slug VARCHAR(255) DEFAULT NULL",
+          "ALTER TABLE blog_posts ADD COLUMN slug VARCHAR(191) DEFAULT NULL",
+          "ALTER TABLE blog_posts MODIFY COLUMN slug VARCHAR(191) DEFAULT NULL",
           "ALTER TABLE blog_posts ADD COLUMN category VARCHAR(100) DEFAULT 'Engineering'",
           "ALTER TABLE blog_posts ADD COLUMN tags JSON",
           "ALTER TABLE blog_posts ADD COLUMN author_id INT DEFAULT NULL",

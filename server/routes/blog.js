@@ -38,6 +38,10 @@ const socialDiscoverPaths = ["/social/discover", "/social/discover.php"];
 const socialSelectPagePaths = ["/social/select-page", "/social/select-page.php"];
 const socialVerifyPaths = ["/social/verify", "/social/verify.php"];
 const socialDisconnectPaths = ["/social/disconnect", "/social/disconnect.php"];
+const deduplicatePaths = ["/deduplicate", "/deduplicate.php"];
+
+const WORKER_ID = `pid-${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
+const localActiveLocks = new Set();
 
 const OAUTH_STATE_SECRET =
   process.env.SESSION_SECRET ||
@@ -252,6 +256,233 @@ async function saveSocialConfig(patch = {}) {
   return merged;
 }
 
+async function loadAutomationConfig() {
+  const fallback = {
+    ...DEFAULT_AUTOMATION_CONFIG,
+    ...(db.getSettings("blog_automation") || {}),
+  };
+  try {
+    const res = await db.query(
+      "SELECT setting_value FROM system_settings WHERE setting_key = $1 LIMIT 1",
+      ["blog_automation"]
+    );
+    const row = res.rows?.[0];
+    if (row && row.setting_value) {
+      const parsed =
+        typeof row.setting_value === "string"
+          ? JSON.parse(row.setting_value)
+          : row.setting_value;
+      const merged = {
+        ...DEFAULT_AUTOMATION_CONFIG,
+        ...fallback,
+        ...(parsed || {}),
+      };
+      db.updateSettings("blog_automation", merged);
+      return merged;
+    }
+  } catch {
+    // fallback
+  }
+  return fallback;
+}
+
+async function saveAutomationConfig(patch = {}) {
+  const current = await loadAutomationConfig();
+  const merged = {
+    ...DEFAULT_AUTOMATION_CONFIG,
+    ...current,
+    ...(patch || {}),
+  };
+  db.updateSettings("blog_automation", merged);
+  const jsonStr = JSON.stringify(merged);
+  try {
+    const check = await db.query(
+      "SELECT setting_key FROM system_settings WHERE setting_key = $1 LIMIT 1",
+      ["blog_automation"]
+    );
+    if (check.rows && check.rows.length > 0) {
+      await db.query(
+        "UPDATE system_settings SET setting_value = $1::jsonb, updated_at = CURRENT_TIMESTAMP WHERE setting_key = $2",
+        [jsonStr, "blog_automation"]
+      );
+    } else {
+      await db.query(
+        "INSERT INTO system_settings (setting_key, setting_value) VALUES ($1, $2::jsonb)",
+        ["blog_automation", jsonStr]
+      );
+    }
+  } catch {
+    // fallback already saved
+  }
+  return merged;
+}
+
+async function ensureLocksTable() {
+  await db
+    .query(`
+      CREATE TABLE IF NOT EXISTS automation_locks (
+        lock_name VARCHAR(120) PRIMARY KEY,
+        locked_until BIGINT NOT NULL,
+        owner VARCHAR(100) NOT NULL
+      )
+    `)
+    .catch(() => {});
+}
+
+async function acquireDistributedLock(lockName, ttlMs = 120000) {
+  const cleanKey = String(lockName || "").slice(0, 118);
+  if (!cleanKey) return false;
+  if (localActiveLocks.has(cleanKey)) return false;
+  localActiveLocks.add(cleanKey);
+
+  try {
+    await ensureLocksTable();
+    const now = Date.now();
+    await db
+      .query(
+        "DELETE FROM automation_locks WHERE lock_name = $1 AND locked_until < $2",
+        [cleanKey, now]
+      )
+      .catch(() => {});
+
+    await db.query(
+      "INSERT INTO automation_locks (lock_name, locked_until, owner) VALUES ($1, $2, $3)",
+      [cleanKey, now + ttlMs, WORKER_ID]
+    );
+    return true;
+  } catch {
+    localActiveLocks.delete(cleanKey);
+    return false;
+  }
+}
+
+async function releaseDistributedLock(lockName) {
+  const cleanKey = String(lockName || "").slice(0, 118);
+  localActiveLocks.delete(cleanKey);
+  if (!cleanKey) return;
+  await db
+    .query("DELETE FROM automation_locks WHERE lock_name = $1", [cleanKey])
+    .catch(() => {});
+}
+
+async function deduplicateEditorialTables() {
+  await ensureSocialPostsTable();
+  let removedBlogs = 0;
+  let removedSocial = 0;
+
+  // 1. Deduplicate blog_posts by normalized slug / title (keep earliest ID)
+  const blogRes = await db.query(
+    "SELECT id, title, slug, status, created_at FROM blog_posts ORDER BY id ASC"
+  );
+  const blogs = blogRes.rows || [];
+  const seenSlugs = new Map();
+  const seenTitles = new Map();
+
+  for (const row of blogs) {
+    const cleanTitle = String(row.title || "").trim();
+    const resolvedSlug = slugifyText(row.slug || cleanTitle) || `post-${row.id}`;
+    if (!row.slug && resolvedSlug) {
+      await db
+        .query("UPDATE blog_posts SET slug = $1 WHERE id = $2", [resolvedSlug, row.id])
+        .catch(() => {});
+    }
+
+    const slugKey = resolvedSlug.toLowerCase();
+    const titleKey = cleanTitle.toLowerCase();
+    const keepId = seenSlugs.get(slugKey) || (titleKey ? seenTitles.get(titleKey) : null);
+
+    if (keepId && Number(keepId) !== Number(row.id)) {
+      await db
+        .query("DELETE FROM social_posts WHERE blog_id = $1", [row.id])
+        .catch(() => {});
+      await db
+        .query("DELETE FROM blog_posts WHERE id = $1", [row.id])
+        .catch(() => {});
+      removedBlogs += 1;
+    } else {
+      seenSlugs.set(slugKey, row.id);
+      if (titleKey) seenTitles.set(titleKey, row.id);
+    }
+  }
+
+  // 2. Deduplicate social_posts by (platform + blog_id) and (platform + normalized title)
+  const socialRes = await db.query(
+    "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts ORDER BY id ASC"
+  );
+  const allSocial = (socialRes.rows || []).map((r) => ({
+    raw: r,
+    parsed: parseSocialRow(r),
+  }));
+
+  const bestByKey = new Map();
+  const toDeleteSocialIds = new Set();
+
+  for (const item of allSocial) {
+    const plt = String(item.parsed.platform || "instagram").toLowerCase();
+    const titleNorm = slugifyText(item.parsed.title || "");
+    const keys = [];
+    if (item.raw.blog_id !== null && item.raw.blog_id !== undefined) {
+      keys.push(`blog:${plt}:${item.raw.blog_id}`);
+    }
+    if (titleNorm) {
+      keys.push(`title:${plt}:${titleNorm}`);
+    }
+    if (keys.length === 0) continue;
+
+    let existingWinner = null;
+    for (const k of keys) {
+      if (bestByKey.has(k)) {
+        existingWinner = bestByKey.get(k);
+        break;
+      }
+    }
+
+    if (!existingWinner) {
+      for (const k of keys) bestByKey.set(k, item);
+    } else {
+      const winnerHasExternal = Boolean(existingWinner.parsed.externalPostId);
+      const currentHasExternal = Boolean(item.parsed.externalPostId);
+      if (!winnerHasExternal && currentHasExternal) {
+        toDeleteSocialIds.add(existingWinner.raw.id);
+        for (const k of keys) bestByKey.set(k, item);
+      } else {
+        toDeleteSocialIds.add(item.raw.id);
+      }
+    }
+  }
+
+  for (const dupSocialId of toDeleteSocialIds) {
+    await db
+      .query("DELETE FROM social_posts WHERE id = $1", [dupSocialId])
+      .catch(() => {});
+    removedSocial += 1;
+  }
+
+  // 3. Enforce DB-level UNIQUE indexes now that duplicates are cleaned
+  await db
+    .query("ALTER TABLE blog_posts ADD UNIQUE INDEX idx_blog_posts_unique_slug (slug)")
+    .catch(() => {});
+  await db
+    .query("CREATE UNIQUE INDEX IF NOT EXISTS idx_blog_posts_unique_slug ON blog_posts (slug)")
+    .catch(() => {});
+  await db
+    .query(
+      "ALTER TABLE social_posts ADD UNIQUE INDEX idx_social_posts_blog_platform (blog_id, platform)"
+    )
+    .catch(() => {});
+  await db
+    .query(
+      "CREATE UNIQUE INDEX IF NOT EXISTS idx_social_posts_blog_platform ON social_posts (blog_id, platform)"
+    )
+    .catch(() => {});
+
+  if (removedBlogs > 0) {
+    await triggerMainSiteSync().catch(() => {});
+  }
+
+  return { removedBlogs, removedSocial };
+}
+
 function parseSocialRow(row) {
   let parsed = {};
   try {
@@ -373,16 +604,59 @@ function buildSocialPayloadFromBlog(blog, platform, socialCfg, blogCfg, override
   };
 }
 
-async function dispatchToExternalSocial(socialPost, socialCfg) {
+async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
   const results = {
     dispatched: false,
     notConfigured: false,
+    alreadyPublished: false,
     deliveryChannel: "studio_feed",
     externalPostId: socialPost.externalPostId || null,
     externalUrl: socialPost.externalUrl || null,
     publishedAt: new Date().toISOString(),
     error: null,
   };
+
+  const dedupeSlug = slugifyText(
+    socialPost.blogSlug || socialPost.title || `post-${socialPost.id || "item"}`
+  );
+  const publishLockKey = `social_dispatch:${socialPost.platform}:${dedupeSlug}`;
+
+  const gotPublishLock = await acquireDistributedLock(publishLockKey, 90 * 1000);
+  if (!gotPublishLock) {
+    results.error = "This post is already being published right now — duplicate dispatch skipped.";
+    return results;
+  }
+
+  try {
+    // Prevent duplicate external publishing if any social_posts row with same title/blog already published externally
+    if (!options.forceRepublish && dedupeSlug) {
+      try {
+        const checkRes = await db.query(
+          "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts WHERE platform = $1",
+          [socialPost.platform]
+        );
+        const alreadyLive = (checkRes.rows || [])
+          .map(parseSocialRow)
+          .find(
+            (p) =>
+              p.status === "published" &&
+              Boolean(p.externalPostId) &&
+              ((socialPost.blogId && String(p.blogId) === String(socialPost.blogId)) ||
+                slugifyText(p.title) === dedupeSlug)
+          );
+        if (alreadyLive) {
+          results.dispatched = true;
+          results.alreadyPublished = true;
+          results.deliveryChannel = alreadyLive.deliveryChannel || "meta_graph_api";
+          results.externalPostId = alreadyLive.externalPostId;
+          results.externalUrl = alreadyLive.externalUrl || null;
+          results.publishedAt = alreadyLive.publishedAt || results.publishedAt;
+          return results;
+        }
+      } catch {
+        // continue
+      }
+    }
 
   const hasWebhook = Boolean(socialCfg.webhookUrl && String(socialCfg.webhookUrl).trim());
   const hasFbCreds = Boolean(socialCfg.facebookPageId && socialCfg.facebookAccessToken);
@@ -637,6 +911,9 @@ async function dispatchToExternalSocial(socialPost, socialCfg) {
   }
 
   return results;
+  } finally {
+    await releaseDistributedLock(publishLockKey);
+  }
 }
 
 async function upsertSocialPostForBlog(blog, platform, options = {}) {
@@ -701,7 +978,9 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
     shouldAttemptExternalPublish &&
     (!alreadyExternallyPublished || options.forceRepublish)
   ) {
-    const dispatched = await dispatchToExternalSocial(built, socialCfg);
+    const dispatched = await dispatchToExternalSocial(built, socialCfg, {
+      forceRepublish: Boolean(options.forceRepublish),
+    });
     if (dispatched.dispatched) {
       nextStatus = "published";
       dispatchInfo = {
@@ -840,11 +1119,23 @@ async function runDailyDevAutomation({
   autoPopulateSocial = true,
   authorId = 1,
 } = {}) {
+  // Distributed lock prevents 2 Hostinger workers or duplicate clicks from ever importing twice
+  const gotLock = await acquireDistributedLock("daily_dev_automation", 8 * 60 * 1000);
+  if (!gotLock) {
+    const currentAuto = await loadAutomationConfig();
+    return {
+      alreadyRunning: true,
+      importedCount: 0,
+      skippedCount: 0,
+      socialGeneratedCount: 0,
+      posts: [],
+      automation: currentAuto,
+    };
+  }
+
+  try {
   const blogConfig = db.getSettings("blog_config") || {};
-  const socialCfg = {
-    ...DEFAULT_SOCIAL_CONFIG,
-    ...(db.getSettings("social_config") || {}),
-  };
+  const socialCfg = await loadSocialConfig();
   const availableCategories = Array.isArray(blogConfig.categories) && blogConfig.categories.length > 0
     ? blogConfig.categories
     : ["Engineering", "Architecture", "AI & Systems", "Cloud & DevOps", "Product Strategy", "Security"];
@@ -915,6 +1206,18 @@ async function runDailyDevAutomation({
       continue;
     }
 
+    // Re-check live SQL immediately before INSERT to eliminate any cross-process race
+    const liveDupRes = await db.query(
+      "SELECT id FROM blog_posts WHERE LOWER(slug) = LOWER($1) OR LOWER(title) = LOWER($2) LIMIT 1",
+      [slug, cleanTitle]
+    );
+    if (liveDupRes.rows && liveDupRes.rows.length > 0) {
+      existingSlugs.add(slug);
+      existingTitles.add(cleanTitle.toLowerCase());
+      skippedCount += 1;
+      continue;
+    }
+
     const tags = Array.isArray(node.tags) ? node.tags.slice(0, 6) : [];
     const resolvedCategory =
       categoryOverride && categoryOverride !== "Auto"
@@ -940,29 +1243,39 @@ async function runDailyDevAutomation({
     const tagsJson = JSON.stringify(tags);
     const readTime = Math.max(2, Math.min(8, Math.ceil(summary.split(/\s+/).length / 45)));
 
-    const insertRes = await db.query(
-      `INSERT INTO blog_posts (title, excerpt, content, author_id, category, tags, status)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'draft')
-       RETURNING id`,
-      [
-        cleanTitle,
-        excerpt,
-        content,
-        authorId,
-        resolvedCategory,
-        tagsJson,
-        {
+    let postId = null;
+    try {
+      const insertRes = await db.query(
+        `INSERT INTO blog_posts (title, excerpt, content, author_id, category, tags, slug, status)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'draft')
+         RETURNING id`,
+        [
+          cleanTitle,
+          excerpt,
+          content,
+          authorId,
+          resolvedCategory,
+          tagsJson,
           slug,
-          author_name: authorName,
-          status,
-          featured_image: node.image || null,
-          read_time: readTime,
-          is_featured: false,
-        },
-      ]
-    );
+          {
+            slug,
+            author_name: authorName,
+            status,
+            featured_image: node.image || null,
+            read_time: readTime,
+            is_featured: false,
+          },
+        ]
+      );
+      postId = insertRes.rows?.[0]?.id;
+    } catch (insErr) {
+      // Unique index caught a concurrent insert — skip cleanly without posting to social
+      skippedCount += 1;
+      existingSlugs.add(slug);
+      existingTitles.add(cleanTitle.toLowerCase());
+      continue;
+    }
 
-    const postId = insertRes.rows?.[0]?.id;
     if (postId) {
       await db
         .query(
@@ -1000,12 +1313,7 @@ async function runDailyDevAutomation({
   }
 
   const nowIso = new Date().toISOString();
-  const currentAuto = {
-    ...DEFAULT_AUTOMATION_CONFIG,
-    ...(db.getSettings("blog_automation") || {}),
-  };
-  const updatedAuto = db.updateSettings("blog_automation", {
-    ...currentAuto,
+  const updatedAuto = await saveAutomationConfig({
     lastRunAt: nowIso,
     lastImportedCount: importedPosts.length,
     lastSkippedCount: skippedCount,
@@ -1014,6 +1322,7 @@ async function runDailyDevAutomation({
   });
 
   if (importedPosts.length > 0) {
+    await triggerMainSiteSync().catch(() => {});
     await createNotification(
       null,
       "info",
@@ -1030,46 +1339,64 @@ async function runDailyDevAutomation({
     posts: importedPosts,
     automation: updatedAuto,
   };
+  } finally {
+    await releaseDistributedLock("daily_dev_automation");
+  }
 }
 
 let automationTimer = null;
 
-function scheduleAutomationTimer() {
+async function scheduleAutomationTimer() {
   if (automationTimer) {
     clearInterval(automationTimer);
     automationTimer = null;
   }
-  const cfg = {
-    ...DEFAULT_AUTOMATION_CONFIG,
-    ...(db.getSettings("blog_automation") || {}),
-  };
+  const cfg = await loadAutomationConfig();
   if (cfg.enabled) {
-    const mins = Math.max(15, Number(cfg.intervalMinutes) || 360);
-    automationTimer = setInterval(() => {
-      runDailyDevAutomation({
-        maxPerRun: cfg.maxPerRun,
-        autoPublish: cfg.autoPublish,
-        categoryOverride: cfg.categoryOverride,
-        autoPopulateSocial: cfg.autoPopulateSocial !== false,
-      }).catch((err) => {
-        console.error("Scheduled daily.dev automation error:", err.message);
-        db.updateSettings("blog_automation", {
-          ...DEFAULT_AUTOMATION_CONFIG,
-          ...(db.getSettings("blog_automation") || {}),
-          lastError: err.message,
+    // Poll every 60s and check SQL lastRunAt so multiple Hostinger workers never double-fire
+    automationTimer = setInterval(async () => {
+      try {
+        const latestCfg = await loadAutomationConfig();
+        if (!latestCfg.enabled) return;
+        const mins = Math.max(15, Number(latestCfg.intervalMinutes) || 360);
+        const lastRunMs = latestCfg.lastRunAt ? new Date(latestCfg.lastRunAt).getTime() : 0;
+        if (lastRunMs && Date.now() - lastRunMs < mins * 60 * 1000) {
+          return;
+        }
+        await runDailyDevAutomation({
+          maxPerRun: latestCfg.maxPerRun,
+          autoPublish: latestCfg.autoPublish,
+          categoryOverride: latestCfg.categoryOverride,
+          autoPopulateSocial: latestCfg.autoPopulateSocial !== false,
         });
-      });
-    }, mins * 60 * 1000);
+      } catch (err) {
+        console.error("Scheduled daily.dev automation error:", err.message);
+        await saveAutomationConfig({ lastError: err.message }).catch(() => {});
+      }
+    }, 60 * 1000);
   }
 }
 
-setTimeout(() => {
+setTimeout(async () => {
   try {
-    scheduleAutomationTimer();
+    const gotCleanupLock = await acquireDistributedLock("startup_deduplicate", 60 * 1000);
+    if (gotCleanupLock) {
+      try {
+        const cleaned = await deduplicateEditorialTables();
+        if (cleaned.removedBlogs > 0 || cleaned.removedSocial > 0) {
+          console.log(
+            `[DEDUP] Cleaned ${cleaned.removedBlogs} duplicate blog posts and ${cleaned.removedSocial} duplicate social posts.`
+          );
+        }
+      } finally {
+        await releaseDistributedLock("startup_deduplicate");
+      }
+    }
+    await scheduleAutomationTimer();
   } catch {
     // ignore on startup
   }
-}, 5000);
+}, 4000);
 
 // Get Blog Configuration API
 router.get(configPaths, requireAuth, async (req, res) => {
@@ -1174,39 +1501,66 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
     return sendJsonResponse(res, "error", "Title required for blog post.");
   }
 
+  const cleanTitle = String(title).trim();
+  const resolvedSlug =
+    slugifyText(slug || cleanTitle) || `post-${Date.now()}`;
+  const createLockKey = `blog_create:${resolvedSlug}`;
+
+  const gotCreateLock = await acquireDistributedLock(createLockKey, 60 * 1000);
+  if (!gotCreateLock) {
+    return sendJsonResponse(
+      res,
+      "error",
+      "This article is already being saved/published — duplicate submission prevented.",
+      null,
+      409
+    );
+  }
+
   try {
     const tagsJson = JSON.stringify(postTags);
-    const query = `
-            INSERT INTO blog_posts (title, excerpt, content, author_id, category, tags, status) 
-            VALUES ($1, $2, $3, $4, $5, $6::jsonb, 'draft') 
-            RETURNING id
-        `;
-    const result = await db.query(query, [
-      title,
-      excerpt || null,
-      content || null,
-      authorId,
-      postCategory,
-      tagsJson,
-      {
-        slug,
-        author_name: author_name || blogConfig.defaultAuthor || "DevInquire Editorial",
-        status: initialStatus,
-        featured_image: featured_image || null,
-        read_time: read_time || 5,
-        is_featured: Boolean(is_featured),
-      },
-    ]);
-    const postId = result.rows?.[0]?.id;
-    const resolvedSlug =
-      slug ||
-      String(title)
-        .toLowerCase()
-        .trim()
-        .replace(/[^a-z0-9-]+/g, "-")
-        .replace(/^-+|-+$/g, "");
     const resolvedAuthor =
       author_name || blogConfig.defaultAuthor || "DevInquire Editorial";
+
+    // Prevent duplicate blog_posts row if same slug or title already exists
+    const existingBlogRes = await db.query(
+      "SELECT id FROM blog_posts WHERE LOWER(slug) = LOWER($1) OR LOWER(title) = LOWER($2) LIMIT 1",
+      [resolvedSlug, cleanTitle]
+    );
+    let postId = existingBlogRes.rows?.[0]?.id || null;
+
+    if (!postId) {
+      const query = `
+            INSERT INTO blog_posts (title, excerpt, content, author_id, category, tags, slug, status) 
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, 'draft') 
+            RETURNING id
+        `;
+      const result = await db.query(query, [
+        cleanTitle,
+        excerpt || null,
+        content || null,
+        authorId,
+        postCategory,
+        tagsJson,
+        resolvedSlug,
+        {
+          slug: resolvedSlug,
+          author_name: resolvedAuthor,
+          status: initialStatus,
+          featured_image: featured_image || null,
+          read_time: read_time || 5,
+          is_featured: Boolean(is_featured),
+        },
+      ]);
+      postId = result.rows?.[0]?.id;
+    } else {
+      await db
+        .query(
+          "UPDATE blog_posts SET title = $1, excerpt = $2, content = $3, category = $4, tags = $5::jsonb WHERE id = $6",
+          [cleanTitle, excerpt || null, content || null, postCategory, tagsJson, postId]
+        )
+        .catch(() => {});
+    }
 
     if (postId) {
       await db
@@ -1228,7 +1582,7 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
     const socialPosts = await syncBlogToSocialChannels(
       {
         id: postId,
-        title,
+        title: cleanTitle,
         slug: resolvedSlug,
         excerpt: excerpt || "",
         content: content || "",
@@ -1276,6 +1630,8 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
       null,
       500
     );
+  } finally {
+    await releaseDistributedLock(createLockKey);
   }
 });
 
@@ -1487,13 +1843,28 @@ router.post(deletePaths, requireMutatingAuth, async (req, res) => {
   }
 });
 
+// Deduplicate Existing Blog & Social Posts on Demand
+router.post(deduplicatePaths, requireMutatingAuth, async (req, res) => {
+  try {
+    const cleaned = await deduplicateEditorialTables();
+    return sendJsonResponse(
+      res,
+      "success",
+      cleaned.removedBlogs > 0 || cleaned.removedSocial > 0
+        ? `Removed ${cleaned.removedBlogs} duplicate blog post${cleaned.removedBlogs === 1 ? "" : "s"} and ${cleaned.removedSocial} duplicate social post${cleaned.removedSocial === 1 ? "" : "s"}.`
+        : "No duplicate blog or social posts found — all channels are clean.",
+      cleaned
+    );
+  } catch (err) {
+    console.error("Blog Deduplicate Error:", err);
+    return sendJsonResponse(res, "error", "Failed to deduplicate posts.", null, 500);
+  }
+});
+
 // Get Daily.dev Blog Automation Status
 router.get(automationStatusPaths, requireAuth, async (req, res) => {
   try {
-    const cfg = {
-      ...DEFAULT_AUTOMATION_CONFIG,
-      ...(db.getSettings("blog_automation") || {}),
-    };
+    const cfg = await loadAutomationConfig();
     return sendJsonResponse(res, "success", "Blog automation status retrieved.", cfg);
   } catch (err) {
     console.error("Blog Automation Status Error:", err);
@@ -1505,10 +1876,7 @@ router.get(automationStatusPaths, requireAuth, async (req, res) => {
 router.post(automationConfigPaths, requireMutatingAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    const current = {
-      ...DEFAULT_AUTOMATION_CONFIG,
-      ...(db.getSettings("blog_automation") || {}),
-    };
+    const current = await loadAutomationConfig();
     const nextCfg = {
       ...current,
       enabled: Boolean(body.enabled),
@@ -1521,8 +1889,8 @@ router.post(automationConfigPaths, requireMutatingAuth, async (req, res) => {
           ? Boolean(body.autoPopulateSocial)
           : current.autoPopulateSocial !== false,
     };
-    const updated = db.updateSettings("blog_automation", nextCfg);
-    scheduleAutomationTimer();
+    const updated = await saveAutomationConfig(nextCfg);
+    await scheduleAutomationTimer();
     return sendJsonResponse(res, "success", "Omnichannel automation workflow saved.", updated);
   } catch (err) {
     console.error("Blog Automation Config Error:", err);
@@ -1534,10 +1902,7 @@ router.post(automationConfigPaths, requireMutatingAuth, async (req, res) => {
 router.post(automationRunPaths, requireMutatingAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    const saved = {
-      ...DEFAULT_AUTOMATION_CONFIG,
-      ...(db.getSettings("blog_automation") || {}),
-    };
+    const saved = await loadAutomationConfig();
     const result = await runDailyDevAutomation({
       maxPerRun: body.maxPerRun || saved.maxPerRun || 10,
       autoPublish: body.autoPublish !== undefined ? Boolean(body.autoPublish) : saved.autoPublish,
@@ -1548,6 +1913,14 @@ router.post(automationRunPaths, requireMutatingAuth, async (req, res) => {
           : saved.autoPopulateSocial !== false,
       authorId: req.session?.user_id || 1,
     });
+    if (result.alreadyRunning) {
+      return sendJsonResponse(
+        res,
+        "success",
+        "Automation sync is already running in progress — duplicate run prevented.",
+        result
+      );
+    }
     return sendJsonResponse(
       res,
       "success",
@@ -1556,14 +1929,9 @@ router.post(automationRunPaths, requireMutatingAuth, async (req, res) => {
     );
   } catch (err) {
     console.error("Blog Automation Run Error:", err);
-    const current = {
-      ...DEFAULT_AUTOMATION_CONFIG,
-      ...(db.getSettings("blog_automation") || {}),
-    };
-    db.updateSettings("blog_automation", {
-      ...current,
+    await saveAutomationConfig({
       lastError: err.message || "Sync failed",
-    });
+    }).catch(() => {});
     return sendJsonResponse(
       res,
       "error",

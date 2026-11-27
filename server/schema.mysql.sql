@@ -141,7 +141,15 @@ CREATE TABLE IF NOT EXISTS `social_posts` (
     `status` VARCHAR(50) DEFAULT 'draft',
     `payload` LONGTEXT NOT NULL,
     `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY `idx_social_posts_blog_platform` (`blog_id`, `platform`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 9c. Distributed Automation Locks (Prevents Multi-Worker Duplicate Imports & Publishes)
+CREATE TABLE IF NOT EXISTS `automation_locks` (
+    `lock_name` VARCHAR(120) PRIMARY KEY,
+    `locked_until` BIGINT NOT NULL,
+    `owner` VARCHAR(100) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 10. Default Admin Provisioning (Email: admin@devinquire.com | Password: DevInquire2025!)

@@ -806,7 +806,9 @@ export const api = {
         verifySocialConnection: (data?: any) =>
             api.fetch('/blog/social/verify', { method: 'POST', body: JSON.stringify(data || {}) }),
         disconnectSocialAccounts: () =>
-            api.fetch('/blog/social/disconnect', { method: 'POST', body: JSON.stringify({}) })
+            api.fetch('/blog/social/disconnect', { method: 'POST', body: JSON.stringify({}) }),
+        deduplicatePosts: () =>
+            api.fetch('/blog/deduplicate', { method: 'POST', body: JSON.stringify({}) })
     },
 
     users: {
