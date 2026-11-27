@@ -31,23 +31,32 @@ async function dispatchInquiryEmail(config, inquiry) {
     });
 
     const lines = [
-        `Name: ${inquiry.name}`,
+        '=== DevInquire Website Form Submission ===',
+        '',
+        `Full Name: ${inquiry.name}`,
         `Email: ${inquiry.email}`,
-        inquiry.phone ? `Phone: ${inquiry.phone}` : null,
+        inquiry.phone ? `Phone / WhatsApp: ${inquiry.phone}` : null,
         inquiry.company ? `Company: ${inquiry.company}` : null,
-        inquiry.service ? `Service: ${inquiry.service}` : null,
+        inquiry.service ? `Service / Product: ${inquiry.service}` : null,
         inquiry.timeline ? `Timeline: ${inquiry.timeline}` : null,
+        inquiry.form_source ? `Form Source: ${inquiry.form_source}` : null,
+        inquiry.payment_status && inquiry.payment_status !== 'none'
+            ? `Pre-Booking / Payment: ${String(inquiry.payment_status).toUpperCase()}${
+                  inquiry.payment_plan ? ` (${inquiry.payment_plan})` : ''
+              }${inquiry.payment_amount ? ` — ₹${inquiry.payment_amount}/-` : ''}`
+            : null,
+        inquiry.payment_reference ? `Payment Reference: ${inquiry.payment_reference}` : null,
         `Subject: ${inquiry.subject}`,
         '',
-        'Message:',
+        '--- Message / Details ---',
         inquiry.message
-    ].filter(Boolean);
+    ].filter((l) => l !== null);
 
     await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: recipient,
         replyTo: inquiry.email,
-        subject: `New Inquiry: ${inquiry.subject}`,
+        subject: inquiry.subject.startsWith('[') ? inquiry.subject : `New Inquiry: ${inquiry.subject}`,
         text: lines.join('\n')
     });
 
@@ -354,22 +363,27 @@ router.post(contactIntakePaths, async (req, res) => {
             '/contacts'
         ).catch(() => {});
 
-        let emailSent = false;
-        if (resolvedPaymentStatus !== 'pending') {
-            emailSent = await dispatchInquiryEmail(config, {
-                name: cleanName,
-                email: cleanEmail,
-                phone: phone || '',
-                company: company || '',
-                service: service || '',
-                timeline: timeline || '',
-                subject: cleanSubject,
-                message: cleanMessage
-            }).catch((mailErr) => {
-                console.warn("Inquiry email dispatch warning:", mailErr.message);
-                return false;
-            });
-        }
+        const emailSent = await dispatchInquiryEmail(config, {
+            name: cleanName,
+            email: cleanEmail,
+            phone: phone || '',
+            company: company || '',
+            service: service || '',
+            timeline: timeline || '',
+            form_source: resolvedSource,
+            payment_status: resolvedPaymentStatus,
+            payment_plan: payment_plan || '',
+            payment_amount: resolvedAmount,
+            payment_reference: payment_reference || '',
+            subject:
+                resolvedPaymentStatus === 'pending' && !cleanSubject.startsWith('[Pre-Booking')
+                    ? `[Pre-Booking Started — ₹${resolvedAmount}/-] ${cleanSubject}`
+                    : cleanSubject,
+            message: cleanMessage
+        }).catch((mailErr) => {
+            console.warn("Inquiry email dispatch warning:", mailErr.message);
+            return false;
+        });
 
         return sendJsonResponse(res, "success", "Inquiry recorded in dashboard ledger.", {
             id: newId ? String(newId) : null,
@@ -476,6 +490,7 @@ router.post(paymentConfirmPaths, async (req, res) => {
                 ]
             );
 
+            let paidEmailSent = false;
             if (finalStatus === 'paid' && match.payment_status !== 'paid') {
                 await createNotification(
                     null,
@@ -484,10 +499,28 @@ router.post(paymentConfirmPaths, async (req, res) => {
                     `${match.name || name || 'Client'} (${match.email || cleanEmail}) — ${normalizePlanLabel(payment_plan, service || match.service)}`,
                     '/contacts'
                 ).catch(() => {});
+
+                const config = db.getSettings('contacts_config');
+                paidEmailSent = await dispatchInquiryEmail(config, {
+                    name: match.name || name || 'Client',
+                    email: match.email || cleanEmail,
+                    phone: phone || match.phone || '',
+                    company: company || match.company || '',
+                    service: service || match.service || '',
+                    timeline: timeline || match.timeline || '',
+                    form_source: form_source || match.form_source || 'Stripe Pre-Booking',
+                    payment_status: 'paid',
+                    payment_plan: normalizePlanLabel(payment_plan, service || match.service),
+                    payment_amount: resolvedAmount,
+                    payment_reference: payment_reference || match.payment_reference || '',
+                    subject: nextSubject,
+                    message: match.message || message || ''
+                }).catch(() => false);
             }
 
             return sendJsonResponse(res, "success", "Payment confirmation synced to client inquiry.", {
                 id: String(match.id),
+                emailSent: paidEmailSent,
                 payment_status: finalStatus,
                 payment_amount: resolvedAmount,
                 payment_reference: payment_reference || match.payment_reference || ''
