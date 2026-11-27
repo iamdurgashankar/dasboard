@@ -88,15 +88,35 @@ export interface ProjectIssue {
   comments?: ProjectComment[];
 }
 
+export type InquiryPaymentStatus =
+  | 'none'
+  | 'opt_out'
+  | 'pending'
+  | 'paid'
+  | 'cancelled'
+  | 'failed';
+
 export interface ContactSubmission {
   id: string;
   name: string;
   email: string;
+  phone?: string;
+  company?: string;
+  service?: string;
+  timeline?: string;
+  form_source?: string;
   subject: string;
   message: string;
   date: string;
   status: 'new' | 'replied' | 'archived';
   priority: 'High' | 'Medium' | 'Low';
+  payment_status?: InquiryPaymentStatus;
+  payment_plan?: string;
+  payment_amount?: number;
+  payment_currency?: string;
+  payment_reference?: string;
+  paid_at?: string | null;
+  formData?: Record<string, any> | null;
 }
 
 export interface ProjectUpdateItem {

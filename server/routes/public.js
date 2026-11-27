@@ -70,44 +70,227 @@ async function dispatchInquiryEmail(config, inquiry) {
 const blogListPaths = ['/blog_list', '/blog_list.php'];
 const blogDetailPaths = ['/blog_detail', '/blog_detail.php'];
 const contactIntakePaths = ['/contact_intake', '/contact_intake.php'];
+const paymentConfirmPaths = ['/payment_confirm', '/payment_confirm.php'];
 
-// Public Contact Intake API (Receives submissions from devinquire.com main site)
+function normalizePlanLabel(planType, serviceName = '') {
+    if (planType === 'consultation') {
+        return '1:1 Technical Consultation (₹399/-)';
+    }
+    if (planType === 'service_confirmation') {
+        return serviceName
+            ? `Service Confirmation (₹99/-) — ${serviceName}`
+            : 'Service Confirmation (₹99/-)';
+    }
+    return planType || '';
+}
+
+function buildFormPayloadJson(body = {}, existingPayloadStr = null) {
+    let base = {};
+    if (existingPayloadStr) {
+        try {
+            base = typeof existingPayloadStr === 'string' ? JSON.parse(existingPayloadStr) : existingPayloadStr;
+        } catch {
+            base = {};
+        }
+    }
+    let incomingExtra = {};
+    if (body.form_payload) {
+        try {
+            incomingExtra =
+                typeof body.form_payload === 'string' ? JSON.parse(body.form_payload) : body.form_payload;
+        } catch {
+            incomingExtra = {};
+        }
+    }
+    const merged = {
+        ...base,
+        ...incomingExtra,
+        name: body.name || base.name || '',
+        email: body.email || base.email || '',
+        phone: body.phone ?? base.phone ?? '',
+        company: body.company ?? base.company ?? '',
+        service: body.service ?? base.service ?? '',
+        product: body.product ?? incomingExtra.product ?? base.product ?? '',
+        timeline: body.timeline ?? base.timeline ?? '',
+        subject: body.subject ?? base.subject ?? '',
+        message: body.message ?? base.message ?? '',
+        categories: body.categories ?? incomingExtra.categories ?? base.categories ?? undefined,
+        form_source: body.form_source || incomingExtra.form_source || base.form_source || 'Website Form',
+        page_url: body.pageUrl || body.page_url || incomingExtra.page_url || base.page_url || '',
+        submitted_at: base.submitted_at || new Date().toISOString()
+    };
+    return JSON.stringify(merged);
+}
+
+// Public Contact Intake API (Receives form submissions & pre-booking checkouts from devinquire.com)
 router.post(contactIntakePaths, async (req, res) => {
     const config = db.getSettings('contacts_config');
     if (config.webhookIntakeEnabled === false) {
         return sendJsonResponse(res, "error", "Public contact intake is currently paused by Administrator.", null, 503);
     }
 
-    const { name, email, subject, message, priority, company, phone, service, timeline } = req.body || {};
+    const body = req.body || {};
+    const {
+        inquiry_id,
+        name,
+        email,
+        subject,
+        message,
+        priority,
+        company,
+        phone,
+        service,
+        timeline,
+        form_source,
+        payment_status,
+        payment_plan,
+        payment_amount,
+        payment_currency,
+        payment_reference,
+        paid_at
+    } = body;
+
     if (!name || !email || !message) {
         return sendJsonResponse(res, "error", "Name, email, and message are required.", null, 400);
     }
 
     try {
-        const resolvedPriority = priority || config.defaultPriority || 'Medium';
-        const resolvedSubject = subject || (service ? `Service Request: ${service}` : 'Website Contact Submission');
         const cleanEmail = String(email).trim().toLowerCase();
-        const cleanSubject = String(resolvedSubject).trim();
+        const cleanName = String(name).trim();
         const cleanMessage = String(message).trim();
+        const resolvedSource = String(
+            form_source ||
+                (service === 'Newsletter'
+                    ? 'Newsletter'
+                    : service
+                    ? 'Services Inquiry'
+                    : 'Contact Form')
+        ).trim();
+        const resolvedPaymentStatus = String(payment_status || 'none').toLowerCase().trim();
+        const resolvedAmount = Number(payment_amount) || (payment_plan === 'consultation' ? 399 : payment_plan === 'service_confirmation' ? 99 : 0);
+        const resolvedCurrency = String(payment_currency || 'INR').toUpperCase();
+        const resolvedPaidAt =
+            resolvedPaymentStatus === 'paid' ? paid_at || new Date().toISOString() : paid_at || null;
+        const resolvedPriority =
+            resolvedPaymentStatus === 'paid'
+                ? 'High'
+                : priority || config.defaultPriority || 'Medium';
+        const resolvedSubject =
+            subject ||
+            (resolvedPaymentStatus === 'paid'
+                ? `[PAID ₹${resolvedAmount}/-] ${normalizePlanLabel(payment_plan, service)}`
+                : service
+                ? `Service Request: ${service}`
+                : 'Website Contact Submission');
+        const cleanSubject = String(resolvedSubject).trim();
 
-        // Deduplicate against recent identical submission within the last 30 seconds
-        const existingCheck = await db.query('SELECT id, email, subject, message FROM contacts ORDER BY created_at DESC');
-        const duplicateRow = (existingCheck.rows || []).slice(0, 5).find(
+        const existingCheck = await db.query('SELECT * FROM contacts ORDER BY created_at DESC');
+        const allContacts = existingCheck.rows || [];
+
+        // 1. Check if updating an existing inquiry (by inquiry_id, payment_reference, or recent pending inquiry from same email)
+        let targetExisting = null;
+        if (inquiry_id) {
+            targetExisting = allContacts.find((r) => String(r.id) === String(inquiry_id)) || null;
+        }
+        if (!targetExisting && payment_reference) {
+            targetExisting =
+                allContacts.find(
+                    (r) =>
+                        r.payment_reference &&
+                        String(r.payment_reference).trim() === String(payment_reference).trim()
+                ) || null;
+        }
+        if (
+            !targetExisting &&
+            (resolvedPaymentStatus === 'paid' ||
+                resolvedPaymentStatus === 'opt_out' ||
+                resolvedPaymentStatus === 'cancelled')
+        ) {
+            targetExisting =
+                allContacts.slice(0, 25).find(
+                    (r) =>
+                        String(r.email || '').toLowerCase() === cleanEmail &&
+                        (r.payment_status === 'pending' || r.payment_status === 'cancelled')
+                ) || null;
+        }
+
+        if (targetExisting) {
+            const nextPaymentStatus =
+                targetExisting.payment_status === 'paid' ? 'paid' : resolvedPaymentStatus;
+            const mergedPayload = buildFormPayloadJson(body, targetExisting.form_payload);
+            const updatedSubject =
+                nextPaymentStatus === 'paid' && !String(targetExisting.subject || '').startsWith('[PAID')
+                    ? `[PAID ₹${resolvedAmount || targetExisting.payment_amount || 399}/-] ${targetExisting.subject || cleanSubject}`
+                    : targetExisting.subject || cleanSubject;
+
+            await db.query(
+                `UPDATE contacts
+                 SET name = $1, company = $2, phone = $3, service = $4, timeline = $5,
+                     subject = $6, message = $7, priority = $8::contact_priority,
+                     form_source = $9, payment_status = $10, payment_plan = $11,
+                     payment_amount = $12, payment_currency = $13, payment_reference = $14,
+                     paid_at = $15, form_payload = $16
+                 WHERE id = $17`,
+                [
+                    cleanName || targetExisting.name,
+                    company || targetExisting.company || '',
+                    phone || targetExisting.phone || '',
+                    service || targetExisting.service || '',
+                    timeline || targetExisting.timeline || '',
+                    updatedSubject,
+                    targetExisting.message || cleanMessage,
+                    nextPaymentStatus === 'paid' ? 'High' : targetExisting.priority || resolvedPriority,
+                    resolvedSource || targetExisting.form_source || 'Website Form',
+                    nextPaymentStatus,
+                    payment_plan || targetExisting.payment_plan || '',
+                    resolvedAmount || Number(targetExisting.payment_amount) || 0,
+                    resolvedCurrency,
+                    payment_reference || targetExisting.payment_reference || '',
+                    nextPaymentStatus === 'paid'
+                        ? resolvedPaidAt || targetExisting.paid_at || new Date().toISOString()
+                        : targetExisting.paid_at || null,
+                    mergedPayload,
+                    targetExisting.id
+                ]
+            );
+
+            if (nextPaymentStatus === 'paid' && targetExisting.payment_status !== 'paid') {
+                await createNotification(
+                    null,
+                    'success',
+                    `Payment Confirmed (₹${resolvedAmount}/-)`,
+                    `${cleanName} (${cleanEmail}) completed ${normalizePlanLabel(payment_plan, service)}.`,
+                    '/contacts'
+                ).catch(() => {});
+            }
+
+            return sendJsonResponse(res, "success", "Inquiry & payment status updated in dashboard ledger.", {
+                id: String(targetExisting.id),
+                updated: true,
+                payment_status: nextPaymentStatus
+            });
+        }
+
+        // 2. Deduplicate identical submission within recent rows
+        const duplicateRow = allContacts.slice(0, 8).find(
             (r) =>
                 String(r.email || '').toLowerCase() === cleanEmail &&
                 String(r.subject || '').trim() === cleanSubject &&
-                String(r.message || '').trim() === cleanMessage
+                String(r.message || '').trim() === cleanMessage &&
+                String(r.payment_status || 'none') === resolvedPaymentStatus
         );
         if (duplicateRow) {
             return sendJsonResponse(res, "success", "Inquiry already recorded in dashboard ledger.", {
-                id: duplicateRow.id
+                id: String(duplicateRow.id)
             });
         }
+
+        const formPayloadStr = buildFormPayloadJson(body, null);
 
         const insertRes = await db.query(
             'INSERT INTO contacts (name, email, subject, message, priority) VALUES ($1, $2, $3, $4, $5::contact_priority) RETURNING id',
             [
-                String(name).trim(),
+                cleanName,
                 cleanEmail,
                 cleanSubject,
                 cleanMessage,
@@ -117,50 +300,300 @@ router.post(contactIntakePaths, async (req, res) => {
                     phone: phone || '',
                     service: service || '',
                     timeline: timeline || '',
+                    form_source: resolvedSource,
+                    payment_status: resolvedPaymentStatus,
+                    payment_plan: payment_plan || '',
+                    payment_amount: resolvedAmount,
+                    payment_currency: resolvedCurrency,
+                    payment_reference: payment_reference || '',
+                    paid_at: resolvedPaidAt,
+                    form_payload: formPayloadStr,
                     status: 'new'
                 }
             ]
         );
 
         const newId = insertRes.rows?.[0]?.id;
-        if (newId && (company || phone || service || timeline)) {
+        if (newId) {
             await db
                 .query(
-                    'UPDATE contacts SET company = $1, phone = $2, service = $3, timeline = $4 WHERE id = $5',
-                    [company || '', phone || '', service || '', timeline || '', newId]
+                    `UPDATE contacts
+                     SET company = $1, phone = $2, service = $3, timeline = $4,
+                         form_source = $5, payment_status = $6, payment_plan = $7,
+                         payment_amount = $8, payment_currency = $9, payment_reference = $10,
+                         paid_at = $11, form_payload = $12
+                     WHERE id = $13`,
+                    [
+                        company || '',
+                        phone || '',
+                        service || '',
+                        timeline || '',
+                        resolvedSource,
+                        resolvedPaymentStatus,
+                        payment_plan || '',
+                        resolvedAmount,
+                        resolvedCurrency,
+                        payment_reference || '',
+                        resolvedPaidAt,
+                        formPayloadStr,
+                        newId
+                    ]
                 )
                 .catch(() => {});
         }
 
         await createNotification(
             null,
-            'info',
-            'Website Inquiry Received',
-            `${name} (${email}) — ${resolvedSubject}`,
+            resolvedPaymentStatus === 'paid' ? 'success' : 'info',
+            resolvedPaymentStatus === 'paid'
+                ? `Payment Confirmed (₹${resolvedAmount}/-)`
+                : resolvedPaymentStatus === 'pending'
+                ? `Pre-Booking Checkout Started (₹${resolvedAmount}/-)`
+                : `Website Inquiry (${resolvedSource})`,
+            `${cleanName} (${cleanEmail}) — ${cleanSubject}`,
             '/contacts'
         ).catch(() => {});
 
-        const emailSent = await dispatchInquiryEmail(config, {
-            name: String(name).trim(),
-            email: cleanEmail,
-            phone: phone || '',
-            company: company || '',
-            service: service || '',
-            timeline: timeline || '',
-            subject: cleanSubject,
-            message: cleanMessage
-        }).catch((mailErr) => {
-            console.warn("Inquiry email dispatch warning:", mailErr.message);
-            return false;
-        });
+        let emailSent = false;
+        if (resolvedPaymentStatus !== 'pending') {
+            emailSent = await dispatchInquiryEmail(config, {
+                name: cleanName,
+                email: cleanEmail,
+                phone: phone || '',
+                company: company || '',
+                service: service || '',
+                timeline: timeline || '',
+                subject: cleanSubject,
+                message: cleanMessage
+            }).catch((mailErr) => {
+                console.warn("Inquiry email dispatch warning:", mailErr.message);
+                return false;
+            });
+        }
 
         return sendJsonResponse(res, "success", "Inquiry recorded in dashboard ledger.", {
-            id: newId,
-            emailSent
+            id: newId ? String(newId) : null,
+            emailSent,
+            payment_status: resolvedPaymentStatus
         });
     } catch (err) {
         console.error("Public Contact Intake Error:", err);
         return sendJsonResponse(res, "error", "Failed to record inquiry.", null, 500);
+    }
+});
+
+// Public Payment Confirmation / Status Reconciliation API (Called by devinquire.com PaymentStatus & Stripe Webhook)
+router.post(paymentConfirmPaths, async (req, res) => {
+    const body = req.body || {};
+    const {
+        inquiry_id,
+        name,
+        email,
+        phone,
+        company,
+        service,
+        timeline,
+        subject,
+        message,
+        form_source,
+        payment_status = 'paid',
+        payment_plan = 'consultation',
+        payment_amount,
+        payment_currency = 'INR',
+        payment_reference,
+        paid_at
+    } = body;
+
+    try {
+        const cleanEmail = String(email || '').trim().toLowerCase();
+        const resolvedStatus = String(payment_status || 'paid').toLowerCase().trim();
+        const resolvedAmount =
+            Number(payment_amount) ||
+            (payment_plan === 'service_confirmation' ? 99 : 399);
+        const resolvedCurrency = String(payment_currency || 'INR').toUpperCase();
+        const resolvedPaidAt =
+            resolvedStatus === 'paid' ? paid_at || new Date().toISOString() : null;
+
+        const existingRes = await db.query('SELECT * FROM contacts ORDER BY created_at DESC');
+        const allContacts = existingRes.rows || [];
+
+        let match = null;
+        if (inquiry_id) {
+            match = allContacts.find((r) => String(r.id) === String(inquiry_id)) || null;
+        }
+        if (!match && payment_reference) {
+            match =
+                allContacts.find(
+                    (r) =>
+                        r.payment_reference &&
+                        String(r.payment_reference).trim() === String(payment_reference).trim()
+                ) || null;
+        }
+        if (!match && cleanEmail) {
+            match =
+                allContacts.slice(0, 30).find(
+                    (r) =>
+                        String(r.email || '').toLowerCase() === cleanEmail &&
+                        (r.payment_status === 'pending' ||
+                            r.payment_status === 'cancelled' ||
+                            r.payment_status === 'none')
+                ) || null;
+        }
+
+        if (match) {
+            const finalStatus = match.payment_status === 'paid' ? 'paid' : resolvedStatus;
+            const mergedPayload = buildFormPayloadJson(body, match.form_payload);
+            const baseSubj = String(match.subject || subject || normalizePlanLabel(payment_plan, service || match.service))
+                .replace(/^\[PAID[^\]]*\]\s*/i, '')
+                .trim();
+            const nextSubject =
+                finalStatus === 'paid'
+                    ? `[PAID ₹${resolvedAmount}/-] ${baseSubj}`
+                    : match.subject || baseSubj;
+
+            await db.query(
+                `UPDATE contacts
+                 SET payment_status = $1, payment_plan = $2, payment_amount = $3,
+                     payment_currency = $4, payment_reference = $5, paid_at = $6,
+                     priority = $7::contact_priority, subject = $8, form_payload = $9,
+                     phone = $10, company = $11, service = $12, timeline = $13
+                 WHERE id = $14`,
+                [
+                    finalStatus,
+                    payment_plan || match.payment_plan || 'consultation',
+                    resolvedAmount,
+                    resolvedCurrency,
+                    payment_reference || match.payment_reference || '',
+                    finalStatus === 'paid' ? resolvedPaidAt || match.paid_at || new Date().toISOString() : match.paid_at || null,
+                    finalStatus === 'paid' ? 'High' : match.priority || 'Medium',
+                    nextSubject,
+                    mergedPayload,
+                    phone || match.phone || '',
+                    company || match.company || '',
+                    service || match.service || '',
+                    timeline || match.timeline || '',
+                    match.id
+                ]
+            );
+
+            if (finalStatus === 'paid' && match.payment_status !== 'paid') {
+                await createNotification(
+                    null,
+                    'success',
+                    `Payment Confirmed (₹${resolvedAmount}/-)`,
+                    `${match.name || name || 'Client'} (${match.email || cleanEmail}) — ${normalizePlanLabel(payment_plan, service || match.service)}`,
+                    '/contacts'
+                ).catch(() => {});
+            }
+
+            return sendJsonResponse(res, "success", "Payment confirmation synced to client inquiry.", {
+                id: String(match.id),
+                payment_status: finalStatus,
+                payment_amount: resolvedAmount,
+                payment_reference: payment_reference || match.payment_reference || ''
+            });
+        }
+
+        // If no matching inquiry existed yet (e.g. direct Stripe Payment Link), create a new confirmed inquiry
+        if (!cleanEmail && !payment_reference) {
+            return sendJsonResponse(res, "error", "Email, inquiry_id, or payment_reference is required.", null, 400);
+        }
+
+        const fallbackName = String(name || 'Stripe Client').trim();
+        const fallbackEmail = cleanEmail || 'stripe-client@devinquire.com';
+        const planTitle = normalizePlanLabel(payment_plan, service);
+        const createdSubject =
+            resolvedStatus === 'paid'
+                ? `[PAID ₹${resolvedAmount}/-] ${subject || planTitle}`
+                : subject || planTitle;
+        const createdMsg =
+            message ||
+            `Payment ${resolvedStatus.toUpperCase()} (${resolvedCurrency} ₹${resolvedAmount}/-) for ${planTitle}.${
+                payment_reference ? `\nReference ID: ${payment_reference}` : ''
+            }`;
+        const payloadStr = buildFormPayloadJson(
+            {
+                ...body,
+                name: fallbackName,
+                email: fallbackEmail,
+                subject: createdSubject,
+                message: createdMsg,
+                form_source: form_source || 'Stripe Pre-Booking'
+            },
+            null
+        );
+
+        const ins = await db.query(
+            'INSERT INTO contacts (name, email, subject, message, priority) VALUES ($1, $2, $3, $4, $5::contact_priority) RETURNING id',
+            [
+                fallbackName,
+                fallbackEmail,
+                createdSubject,
+                createdMsg,
+                resolvedStatus === 'paid' ? 'High' : 'Medium',
+                {
+                    company: company || '',
+                    phone: phone || '',
+                    service: service || planTitle,
+                    timeline: timeline || '',
+                    form_source: form_source || 'Stripe Pre-Booking',
+                    payment_status: resolvedStatus,
+                    payment_plan: payment_plan || 'consultation',
+                    payment_amount: resolvedAmount,
+                    payment_currency: resolvedCurrency,
+                    payment_reference: payment_reference || '',
+                    paid_at: resolvedPaidAt,
+                    form_payload: payloadStr,
+                    status: 'new'
+                }
+            ]
+        );
+        const newId = ins.rows?.[0]?.id;
+        if (newId) {
+            await db
+                .query(
+                    `UPDATE contacts
+                     SET company = $1, phone = $2, service = $3, timeline = $4,
+                         form_source = $5, payment_status = $6, payment_plan = $7,
+                         payment_amount = $8, payment_currency = $9, payment_reference = $10,
+                         paid_at = $11, form_payload = $12
+                     WHERE id = $13`,
+                    [
+                        company || '',
+                        phone || '',
+                        service || planTitle,
+                        timeline || '',
+                        form_source || 'Stripe Pre-Booking',
+                        resolvedStatus,
+                        payment_plan || 'consultation',
+                        resolvedAmount,
+                        resolvedCurrency,
+                        payment_reference || '',
+                        resolvedPaidAt,
+                        payloadStr,
+                        newId
+                    ]
+                )
+                .catch(() => {});
+        }
+
+        if (resolvedStatus === 'paid') {
+            await createNotification(
+                null,
+                'success',
+                `Payment Confirmed (₹${resolvedAmount}/-)`,
+                `${fallbackName} (${fallbackEmail}) — ${planTitle}`,
+                '/contacts'
+            ).catch(() => {});
+        }
+
+        return sendJsonResponse(res, "success", "Payment inquiry recorded in dashboard ledger.", {
+            id: newId ? String(newId) : null,
+            payment_status: resolvedStatus
+        });
+    } catch (err) {
+        console.error("Public Payment Confirm Error:", err);
+        return sendJsonResponse(res, "error", "Failed to confirm payment on inquiry.", null, 500);
     }
 });
 

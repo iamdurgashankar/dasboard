@@ -492,6 +492,7 @@ async function ensureFreshDistBuild() {
     const watchedSources = [
       path.join(rootDir, "App.tsx"),
       path.join(rootDir, "pages/BlogManagement.tsx"),
+      path.join(rootDir, "pages/ContactSubmissions.tsx"),
       path.join(rootDir, "pages/Quotations.tsx"),
       path.join(rootDir, "services/api.ts"),
     ];

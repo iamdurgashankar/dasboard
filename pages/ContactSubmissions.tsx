@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { ContactSubmission } from '../types';
+import { ContactSubmission, InquiryPaymentStatus } from '../types';
 import { api } from '../services/api';
 
 interface InquiryConfig {
@@ -39,6 +39,34 @@ const DEFAULT_CONFIG: InquiryConfig = {
   slaHours: 24,
 };
 
+const TIMELINE_LABELS: Record<string, string> = {
+  asap: 'ASAP (Immediate)',
+  '1-month': 'Within 1 Month',
+  '2-3-months': '2–3 Months',
+  '3-6-months': '3–6 Months',
+  '6-months-plus': '6+ Months',
+  flexible: 'Flexible',
+};
+
+function formatTimeline(raw?: string): string {
+  if (!raw) return '';
+  const clean = String(raw).trim();
+  return TIMELINE_LABELS[clean.toLowerCase()] || clean;
+}
+
+function formatPlanLabel(plan?: string, amount?: number): string {
+  if (plan === 'consultation') {
+    return `1:1 Technical Consultation (₹${amount || 399}/-)`;
+  }
+  if (plan === 'service_confirmation') {
+    return `Service Confirmation Pass (₹${amount || 99}/-)`;
+  }
+  if (amount && amount > 0) {
+    return `Pre-Booking Payment (₹${amount}/-)`;
+  }
+  return plan || 'Standard Inquiry';
+}
+
 const ContactSubmissions: React.FC = () => {
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -48,9 +76,22 @@ const ContactSubmissions: React.FC = () => {
   const [selectedSubmission, setSelectedSubmission] = useState<any | null>(null);
   const [replyText, setReplyText] = useState('');
   const [notesText, setNotesText] = useState('');
+  const [paymentEdit, setPaymentEdit] = useState<{
+    payment_status: InquiryPaymentStatus;
+    payment_plan: string;
+    payment_amount: number;
+    payment_reference: string;
+  }>({
+    payment_status: 'none',
+    payment_plan: 'consultation',
+    payment_amount: 0,
+    payment_reference: '',
+  });
   const [isSavingDetail, setIsSavingDetail] = useState(false);
 
   const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [filterPayment, setFilterPayment] = useState<string>('all');
+  const [filterSource, setFilterSource] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
   // Log New Inquiry Modal
@@ -61,8 +102,14 @@ const ContactSubmissions: React.FC = () => {
     email: '',
     company: '',
     phone: '',
+    service: '',
+    timeline: '',
     subject: '',
     priority: 'Medium' as 'Low' | 'Medium' | 'High',
+    payment_status: 'none' as InquiryPaymentStatus,
+    payment_plan: '',
+    payment_amount: 0,
+    payment_reference: '',
     message: '',
   });
 
@@ -81,7 +128,7 @@ const ContactSubmissions: React.FC = () => {
   useEffect(() => {
     fetchSubmissions(false);
     fetchConfig();
-    const interval = setInterval(() => fetchSubmissions(true), 15000);
+    const interval = setInterval(() => fetchSubmissions(true), 12000);
     const onFocus = () => fetchSubmissions(true);
     const onVisibility = () => {
       if (document.visibilityState === 'visible') fetchSubmissions(true);
@@ -137,21 +184,45 @@ const ContactSubmissions: React.FC = () => {
           .replace(/\{\{subject\}\}/g, sub.subject || 'your inquiry')
     );
     setNotesText(sub.notes || '');
+    setPaymentEdit({
+      payment_status: (sub.payment_status || 'none') as InquiryPaymentStatus,
+      payment_plan: sub.payment_plan || 'consultation',
+      payment_amount:
+        Number(sub.payment_amount) ||
+        (sub.payment_plan === 'service_confirmation' ? 99 : sub.payment_plan === 'consultation' ? 399 : 0),
+      payment_reference: sub.payment_reference || '',
+    });
   };
 
   const filteredSubmissions = useMemo(() => {
     return submissions.filter((s) => {
       const matchesStatus = filterStatus === 'all' || s.status === filterStatus;
+
+      const paySt = String(s.payment_status || 'none').toLowerCase();
+      const matchesPayment =
+        filterPayment === 'all' ||
+        (filterPayment === 'paid' && paySt === 'paid') ||
+        (filterPayment === 'pending' && paySt === 'pending') ||
+        (filterPayment === 'free' && (paySt === 'none' || paySt === 'opt_out' || paySt === 'cancelled'));
+
+      const src = String(s.form_source || 'Contact Form').toLowerCase();
+      const matchesSource =
+        filterSource === 'all' || src.includes(filterSource.toLowerCase());
+
       const q = searchTerm.toLowerCase();
       const matchesSearch =
         !q ||
         String(s.name || '').toLowerCase().includes(q) ||
         String(s.email || '').toLowerCase().includes(q) ||
+        String(s.phone || '').toLowerCase().includes(q) ||
+        String(s.company || '').toLowerCase().includes(q) ||
+        String(s.service || '').toLowerCase().includes(q) ||
         String(s.subject || '').toLowerCase().includes(q) ||
-        String(s.company || '').toLowerCase().includes(q);
-      return matchesStatus && matchesSearch;
+        String(s.message || '').toLowerCase().includes(q) ||
+        String(s.payment_reference || '').toLowerCase().includes(q);
+      return matchesStatus && matchesPayment && matchesSource && matchesSearch;
     });
-  }, [submissions, filterStatus, searchTerm]);
+  }, [submissions, filterStatus, filterPayment, filterSource, searchTerm]);
 
   const counts = useMemo(() => {
     return {
@@ -162,13 +233,31 @@ const ContactSubmissions: React.FC = () => {
     };
   }, [submissions]);
 
+  const paymentStats = useMemo(() => {
+    const paidItems = submissions.filter(
+      (s) => String(s.payment_status || '').toLowerCase() === 'paid'
+    );
+    const pendingItems = submissions.filter(
+      (s) => String(s.payment_status || '').toLowerCase() === 'pending'
+    );
+    const totalRevenue = paidItems.reduce(
+      (sum, item) => sum + (Number(item.payment_amount) || 0),
+      0
+    );
+    return {
+      paidCount: paidItems.length,
+      pendingCount: pendingItems.length,
+      totalRevenue,
+    };
+  }, [submissions]);
+
   const updateStatusOrPriority = async (
     id: string,
     patch: { status?: ContactSubmission['status']; priority?: 'Low' | 'Medium' | 'High' }
   ) => {
     try {
       await api.contacts.update({ id, ...patch });
-      await fetchSubmissions();
+      await fetchSubmissions(true);
       if (selectedSubmission?.id === id) {
         setSelectedSubmission((prev: any) => (prev ? { ...prev, ...patch } : null));
       }
@@ -183,14 +272,26 @@ const ContactSubmissions: React.FC = () => {
     if (!selectedSubmission) return;
     setIsSavingDetail(true);
     try {
-      const nextStatus = replyText.trim() ? 'replied' : selectedSubmission.status;
+      const hasNewReply =
+        replyText.trim() && replyText.trim() !== (selectedSubmission.reply_message || '').trim();
+      const nextStatus = hasNewReply ? 'replied' : selectedSubmission.status;
+      const paidTimestamp =
+        paymentEdit.payment_status === 'paid'
+          ? selectedSubmission.paid_at || new Date().toISOString()
+          : null;
+
       await api.contacts.update({
         id: selectedSubmission.id,
         status: nextStatus,
         reply_message: replyText.trim(),
         notes: notesText.trim(),
+        payment_status: paymentEdit.payment_status,
+        payment_plan: paymentEdit.payment_plan,
+        payment_amount: Number(paymentEdit.payment_amount) || 0,
+        payment_reference: paymentEdit.payment_reference.trim(),
+        paid_at: paidTimestamp,
       });
-      await fetchSubmissions();
+      await fetchSubmissions(true);
       setSelectedSubmission((prev: any) =>
         prev
           ? {
@@ -198,15 +299,64 @@ const ContactSubmissions: React.FC = () => {
               status: nextStatus,
               reply_message: replyText.trim(),
               notes: notesText.trim(),
-              replied_at: new Date().toISOString(),
+              payment_status: paymentEdit.payment_status,
+              payment_plan: paymentEdit.payment_plan,
+              payment_amount: Number(paymentEdit.payment_amount) || 0,
+              payment_reference: paymentEdit.payment_reference.trim(),
+              paid_at: paidTimestamp,
+              replied_at: hasNewReply ? new Date().toISOString() : prev.replied_at,
             }
           : null
       );
-      showToast('Reply & internal notes saved to inquiry ledger.');
+      showToast('Inquiry details, payment confirmation & reply saved.');
     } catch (err) {
       console.error('Reply save error:', err);
     } finally {
       setIsSavingDetail(false);
+    }
+  };
+
+  const handleQuickConfirmPayment = async () => {
+    if (!selectedSubmission) return;
+    const plan = paymentEdit.payment_plan || 'consultation';
+    const amt =
+      Number(paymentEdit.payment_amount) ||
+      (plan === 'service_confirmation' ? 99 : 399);
+    const nowIso = new Date().toISOString();
+    try {
+      await api.contacts.update({
+        id: selectedSubmission.id,
+        priority: 'High',
+        payment_status: 'paid',
+        payment_plan: plan,
+        payment_amount: amt,
+        payment_reference: paymentEdit.payment_reference.trim() || `manual-${Date.now()}`,
+        paid_at: nowIso,
+      });
+      setPaymentEdit((prev) => ({
+        ...prev,
+        payment_status: 'paid',
+        payment_plan: plan,
+        payment_amount: amt,
+        payment_reference: prev.payment_reference.trim() || `manual-${Date.now()}`,
+      }));
+      setSelectedSubmission((prev: any) =>
+        prev
+          ? {
+              ...prev,
+              priority: 'High',
+              payment_status: 'paid',
+              payment_plan: plan,
+              payment_amount: amt,
+              payment_reference: paymentEdit.payment_reference.trim() || `manual-${Date.now()}`,
+              paid_at: nowIso,
+            }
+          : null
+      );
+      await fetchSubmissions(true);
+      showToast(`Payment confirmed (₹${amt}/-) on inquiry!`);
+    } catch (err) {
+      console.error('Quick confirm payment error:', err);
     }
   };
 
@@ -223,8 +373,14 @@ const ContactSubmissions: React.FC = () => {
         email: '',
         company: '',
         phone: '',
+        service: '',
+        timeline: '',
         subject: '',
         priority: config.defaultPriority || 'Medium',
+        payment_status: 'none',
+        payment_plan: '',
+        payment_amount: 0,
+        payment_reference: '',
         message: '',
       });
       showToast('New client inquiry logged.');
@@ -264,6 +420,12 @@ const ContactSubmissions: React.FC = () => {
     }
   };
 
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard?.writeText(text).then(() => {
+      showToast(`${label} copied to clipboard.`);
+    });
+  };
+
   const getPriorityBadge = (priority: string) => {
     const p = (priority || 'Medium').toLowerCase();
     if (p === 'high') {
@@ -286,6 +448,70 @@ const ContactSubmissions: React.FC = () => {
     return 'bg-[var(--apple-border)] text-[var(--apple-text-secondary)]';
   };
 
+  const renderPaymentBadge = (sub: any) => {
+    const st = String(sub.payment_status || 'none').toLowerCase();
+    const amt =
+      Number(sub.payment_amount) ||
+      (sub.payment_plan === 'service_confirmation' ? 99 : sub.payment_plan === 'consultation' ? 399 : 0);
+    const shortPlan =
+      sub.payment_plan === 'consultation'
+        ? '1:1 Consultation'
+        : sub.payment_plan === 'service_confirmation'
+        ? 'Service Pass'
+        : 'Pre-Booking';
+
+    if (st === 'paid') {
+      return (
+        <div className="space-y-1">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold bg-[#28CD41]/15 text-[#1E8E3E] dark:text-[#30D158] border border-[#28CD41]/25 whitespace-nowrap">
+            <i className="fas fa-circle-check text-[10px]"></i>
+            <span>Paid ₹{amt}/-</span>
+          </span>
+          <p className="text-[10.5px] text-[var(--apple-text-secondary)] font-medium truncate max-w-[150px]">
+            {shortPlan}
+          </p>
+        </div>
+      );
+    }
+
+    if (st === 'pending') {
+      return (
+        <div className="space-y-1">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-[#FF9500]/15 text-[#D97706] dark:text-[#FF9F0A] border border-[#FF9500]/25 whitespace-nowrap">
+            <i className="fas fa-hourglass-half text-[10px]"></i>
+            <span>Pending {amt ? `₹${amt}/-` : ''}</span>
+          </span>
+          <p className="text-[10.5px] text-[var(--apple-text-tertiary)] truncate max-w-[150px]">
+            Stripe Checkout Initiated
+          </p>
+        </div>
+      );
+    }
+
+    if (st === 'cancelled') {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-[#FF3B30]/10 text-[#FF3B30] whitespace-nowrap">
+          <i className="fas fa-ban text-[10px]"></i>
+          <span>Checkout Cancelled</span>
+        </span>
+      );
+    }
+
+    if (st === 'opt_out') {
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium bg-[#4e45e1]/10 text-[var(--apple-blue)] whitespace-nowrap">
+          <span>Free Query (Opt-Out)</span>
+        </span>
+      );
+    }
+
+    return (
+      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium apple-subcard text-[var(--apple-text-tertiary)] whitespace-nowrap">
+        <span>Standard Form</span>
+      </span>
+    );
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500 max-w-[1440px] w-full mx-auto pb-12">
       {/* Header */}
@@ -293,7 +519,7 @@ const ContactSubmissions: React.FC = () => {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <span className="text-[12px] font-semibold uppercase tracking-wider text-[var(--apple-blue)]">
-              Client Intake & CRM Ledger
+              Website Forms, Payment Confirmations &amp; CRM Ledger
             </span>
             <span
               className={`px-2 py-0.5 rounded-full text-[10px] font-semibold inline-flex items-center gap-1.5 ${
@@ -307,7 +533,7 @@ const ContactSubmissions: React.FC = () => {
                   config.webhookIntakeEnabled ? 'bg-[#28CD41] animate-pulse' : 'bg-[#FF9500]'
                 }`}
               ></span>
-              <span>{config.webhookIntakeEnabled ? 'Live Auto-Fetch Active' : 'Intake Paused'}</span>
+              <span>{config.webhookIntakeEnabled ? 'devinquire.com Live Sync' : 'Intake Paused'}</span>
             </span>
             <span className="text-[11px] text-[var(--apple-text-tertiary)]">
               Synced {lastSyncedAt}
@@ -317,11 +543,20 @@ const ContactSubmissions: React.FC = () => {
             Client Inquiries
           </h1>
           <p className="text-[14px] text-[var(--apple-text-secondary)] mt-0.5 max-w-2xl">
-            Manage inbound client requests, configure intake routing & auto-replies, and track SLA responses.
+            View all form submissions from <strong>devinquire.com</strong> (Contact, Services, Product Demos, Newsletter) along with live Stripe pre-booking payment confirmations.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center">
+        <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center flex-wrap">
+          <button
+            type="button"
+            onClick={() => fetchSubmissions(false)}
+            className="h-10 px-3.5 apple-secondary-btn rounded-[12px] text-[12.5px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
+            title="Refresh inquiries & payment confirmations"
+          >
+            <i className={`fas fa-arrows-rotate text-[var(--apple-blue)] text-xs ${isLoading ? 'fa-spin' : ''}`}></i>
+            <span>Refresh</span>
+          </button>
           <button
             onClick={() => setShowConfigModal(true)}
             className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
@@ -356,18 +591,63 @@ const ContactSubmissions: React.FC = () => {
         </div>
       )}
 
-      {/* Configuration Summary Bar */}
+      {/* KPI & Payment Summary Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
         <div className="apple-card p-4 flex items-center justify-between">
           <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+              Website Form Submissions
+            </p>
+            <p className="text-[22px] font-bold text-[var(--apple-text-primary)] mt-0.5">
+              {counts.new}{' '}
+              <span className="text-[12px] font-normal text-[var(--apple-text-secondary)]">
+                new / {counts.all} total
+              </span>
+            </p>
+          </div>
+          <div className="w-10 h-10 rounded-[12px] bg-[#FF9500]/12 text-[#FF9500] flex items-center justify-center">
+            <i className="fas fa-inbox text-sm"></i>
+          </div>
+        </div>
+
+        <div
+          onClick={() => setFilterPayment(filterPayment === 'paid' ? 'all' : 'paid')}
+          className="apple-card p-4 flex items-center justify-between cursor-pointer hover:border-[#28CD41]/50 transition-all"
+        >
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+              Confirmed Payments
+            </p>
+            <p className="text-[20px] font-bold text-[#1E8E3E] dark:text-[#30D158] mt-0.5">
+              {paymentStats.paidCount} Paid{' '}
+              <span className="text-[13px] font-semibold text-[var(--apple-text-primary)]">
+                • ₹{paymentStats.totalRevenue.toLocaleString('en-IN')}/-
+              </span>
+            </p>
+            {paymentStats.pendingCount > 0 && (
+              <p className="text-[11px] text-[#D97706] font-medium">
+                {paymentStats.pendingCount} checkout pending
+              </p>
+            )}
+          </div>
+          <div className="w-10 h-10 rounded-[12px] bg-[#28CD41]/15 text-[#1E8E3E] dark:text-[#30D158] flex items-center justify-center">
+            <i className="fas fa-credit-card text-sm"></i>
+          </div>
+        </div>
+
+        <div className="apple-card p-4 flex items-center justify-between">
+          <div className="min-w-0 pr-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
               Routing Destination
             </p>
             <p className="text-[14px] font-semibold text-[var(--apple-text-primary)] mt-0.5 truncate">
               {config.recipientEmail}
             </p>
+            <p className="text-[11px] text-[var(--apple-text-secondary)] mt-0.5">
+              Contact • Services • Products • Newsletter
+            </p>
           </div>
-          <div className="w-9 h-9 rounded-[10px] bg-[#4e45e1]/10 text-[var(--apple-blue)] flex items-center justify-center">
+          <div className="w-10 h-10 rounded-[12px] bg-[#4e45e1]/10 text-[var(--apple-blue)] flex items-center justify-center shrink-0">
             <i className="fas fa-at text-sm"></i>
           </div>
         </div>
@@ -375,84 +655,89 @@ const ContactSubmissions: React.FC = () => {
         <div className="apple-card p-4 flex items-center justify-between">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
-              New Inquiries
-            </p>
-            <p className="text-[20px] font-bold text-[var(--apple-text-primary)] mt-0.5">
-              {counts.new} <span className="text-[12px] font-normal text-[var(--apple-text-secondary)]">/ {counts.all} total</span>
-            </p>
-          </div>
-          <div className="w-9 h-9 rounded-[10px] bg-[#FF9500]/12 text-[#FF9500] flex items-center justify-center">
-            <i className="fas fa-inbox text-sm"></i>
-          </div>
-        </div>
-
-        <div className="apple-card p-4 flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
-              Auto-Responder
+              Auto-Responder &amp; SLA
             </p>
             <p className="text-[14px] font-semibold text-[var(--apple-text-primary)] mt-0.5">
               {config.autoReplyEnabled ? 'Enabled (Instant)' : 'Disabled'}
             </p>
+            <p className="text-[11px] text-[var(--apple-text-secondary)] mt-0.5">
+              Response target: {config.slaHours} hours
+            </p>
           </div>
-          <div className="w-9 h-9 rounded-[10px] bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158] flex items-center justify-center">
+          <div className="w-10 h-10 rounded-[12px] bg-[#5856D6]/12 text-[#5856D6] flex items-center justify-center">
             <i className="fas fa-bolt text-sm"></i>
-          </div>
-        </div>
-
-        <div className="apple-card p-4 flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
-              Target Response SLA
-            </p>
-            <p className="text-[14px] font-semibold text-[var(--apple-text-primary)] mt-0.5">
-              Within {config.slaHours} Hours ({config.defaultPriority} Default)
-            </p>
-          </div>
-          <div className="w-9 h-9 rounded-[10px] bg-[#5856D6]/12 text-[#5856D6] flex items-center justify-center">
-            <i className="fas fa-clock text-sm"></i>
           </div>
         </div>
       </div>
 
       {/* Filter & Search Bar */}
-      <div className="apple-card p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="inline-flex items-center h-10 p-1 rounded-[11px] bg-black/[0.04] dark:bg-white/[0.06] border border-[var(--apple-border)] w-fit overflow-x-auto">
-          {(['all', 'new', 'replied', 'archived'] as const).map((status) => {
-            const active = filterStatus === status;
-            return (
-              <button
-                key={status}
-                type="button"
-                onClick={() => setFilterStatus(status)}
-                className={`h-8 px-3.5 rounded-[8px] text-[12px] font-semibold capitalize inline-flex items-center gap-1.5 transition-all whitespace-nowrap ${
-                  active
-                    ? 'bg-[#4e45e1] text-white badge-white shadow-sm'
-                    : 'text-[var(--apple-text-secondary)] hover:text-[var(--apple-text-primary)]'
-                }`}
-              >
-                <span>{status}</span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+      <div className="apple-card p-3 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Status Tabs */}
+          <div className="inline-flex items-center h-10 p-1 rounded-[11px] bg-black/[0.04] dark:bg-white/[0.06] border border-[var(--apple-border)] overflow-x-auto">
+            {(['all', 'new', 'replied', 'archived'] as const).map((status) => {
+              const active = filterStatus === status;
+              return (
+                <button
+                  key={status}
+                  type="button"
+                  onClick={() => setFilterStatus(status)}
+                  className={`h-8 px-3 rounded-[8px] text-[12px] font-semibold capitalize inline-flex items-center gap-1.5 transition-all whitespace-nowrap ${
                     active
-                      ? 'bg-white/20 text-white badge-white'
-                      : 'bg-black/[0.06] dark:bg-white/[0.08] text-[var(--apple-text-tertiary)]'
+                      ? 'bg-[#4e45e1] text-white badge-white shadow-sm'
+                      : 'text-[var(--apple-text-secondary)] hover:text-[var(--apple-text-primary)]'
                   }`}
                 >
-                  {counts[status]}
-                </span>
-              </button>
-            );
-          })}
+                  <span>{status}</span>
+                  <span
+                    className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                      active
+                        ? 'bg-white/20 text-white badge-white'
+                        : 'bg-black/[0.06] dark:bg-white/[0.08] text-[var(--apple-text-tertiary)]'
+                    }`}
+                  >
+                    {counts[status]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Payment Filter */}
+          <select
+            value={filterPayment}
+            onChange={(e) => setFilterPayment(e.target.value)}
+            aria-label="Filter by payment status"
+            className="apple-input h-10 px-3 text-[12px] font-semibold rounded-[11px]"
+          >
+            <option value="all">All Payment States</option>
+            <option value="paid">✓ Paid Confirmed ({paymentStats.paidCount})</option>
+            <option value="pending">⏳ Checkout Pending ({paymentStats.pendingCount})</option>
+            <option value="free">Free / Opt-Out Inquiries</option>
+          </select>
+
+          {/* Form Source Filter */}
+          <select
+            value={filterSource}
+            onChange={(e) => setFilterSource(e.target.value)}
+            aria-label="Filter by website form"
+            className="apple-input h-10 px-3 text-[12px] font-semibold rounded-[11px]"
+          >
+            <option value="all">All Website Forms</option>
+            <option value="contact">Contact Form (/contact)</option>
+            <option value="service">Services Modal (/services)</option>
+            <option value="product">Product Demo (/products)</option>
+            <option value="newsletter">Newsletter Subscription</option>
+          </select>
         </div>
 
-        <div className="relative w-full sm:w-72">
+        <div className="relative w-full lg:w-72">
           <i className="fas fa-search absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--apple-text-tertiary)] text-xs pointer-events-none"></i>
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search client, email, subject…"
+            placeholder="Search client, phone, service, payment ID…"
             className="w-full apple-input h-10 pl-9 pr-4 text-[13px] rounded-[11px]"
           />
         </div>
@@ -464,113 +749,156 @@ const ContactSubmissions: React.FC = () => {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-[var(--apple-border)] text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
-                <th className="px-6 py-4">Client Identity</th>
-                <th className="px-6 py-4">Subject & Preview</th>
-                <th className="px-6 py-4">Priority</th>
-                <th className="px-6 py-4">Received</th>
-                <th className="px-6 py-4">Status</th>
-                <th className="px-6 py-4 text-right">Actions</th>
+                <th className="px-5 py-4">Client Identity</th>
+                <th className="px-5 py-4">Form Data &amp; Scope</th>
+                <th className="px-5 py-4">Payment Confirmation</th>
+                <th className="px-5 py-4">Priority</th>
+                <th className="px-5 py-4">Received</th>
+                <th className="px-5 py-4">Status</th>
+                <th className="px-5 py-4 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--apple-border)]">
               {isLoading && submissions.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-[13px] text-[var(--apple-text-secondary)]">
-                    Loading client inquiries…
+                  <td colSpan={7} className="px-6 py-12 text-center text-[13px] text-[var(--apple-text-secondary)]">
+                    Loading client inquiries &amp; payment confirmations…
                   </td>
                 </tr>
               ) : filteredSubmissions.length > 0 ? (
-                filteredSubmissions.map((sub) => (
-                  <tr
-                    key={sub.id}
-                    onClick={() => openDetail(sub)}
-                    className="hover:bg-[var(--apple-surface-subcard-hover)] transition-colors cursor-pointer"
-                  >
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-full bg-[#4e45e1]/12 text-[var(--apple-blue)] flex items-center justify-center font-semibold text-[13px] shrink-0">
-                          {(sub.name || 'C').charAt(0).toUpperCase()}
+                filteredSubmissions.map((sub) => {
+                  const phoneVal = sub.phone || sub.formData?.phone || '';
+                  const companyVal = sub.company || sub.formData?.company || '';
+                  const serviceVal = sub.service || sub.formData?.service || sub.formData?.product || '';
+                  const timelineVal = formatTimeline(sub.timeline || sub.formData?.timeline);
+                  const sourceVal = sub.form_source || sub.formData?.form_source || 'Contact Form';
+
+                  return (
+                    <tr
+                      key={sub.id}
+                      onClick={() => openDetail(sub)}
+                      className="hover:bg-[var(--apple-surface-subcard-hover)] transition-colors cursor-pointer"
+                    >
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`w-9 h-9 rounded-full flex items-center justify-center font-semibold text-[13px] shrink-0 ${
+                              sub.payment_status === 'paid'
+                                ? 'bg-[#28CD41]/15 text-[#1E8E3E] dark:text-[#30D158]'
+                                : 'bg-[#4e45e1]/12 text-[var(--apple-blue)]'
+                            }`}
+                          >
+                            {(sub.name || 'C').charAt(0).toUpperCase()}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[14px] font-semibold text-[var(--apple-text-primary)] truncate">
+                              {sub.name}
+                            </p>
+                            <p className="text-[12px] text-[var(--apple-text-tertiary)] truncate">
+                              {sub.email}
+                            </p>
+                            {(phoneVal || companyVal) && (
+                              <p className="text-[11px] text-[var(--apple-text-secondary)] truncate mt-0.5">
+                                {phoneVal ? `📞 ${phoneVal}` : ''}
+                                {phoneVal && companyVal ? ' • ' : ''}
+                                {companyVal ? companyVal : ''}
+                              </p>
+                            )}
+                          </div>
                         </div>
-                        <div className="min-w-0">
-                          <p className="text-[14px] font-semibold text-[var(--apple-text-primary)] truncate">
-                            {sub.name}
-                          </p>
-                          <p className="text-[12px] text-[var(--apple-text-tertiary)] truncate">
-                            {sub.email}
-                            {sub.company ? ` • ${sub.company}` : ''}
-                          </p>
+                      </td>
+
+                      <td className="px-5 py-4 max-w-sm">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-[#4e45e1]/10 text-[var(--apple-blue)]">
+                            {sourceVal}
+                          </span>
+                          {serviceVal && serviceVal !== 'Newsletter' && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium apple-subcard text-[var(--apple-text-secondary)] truncate max-w-[160px]">
+                              {serviceVal}
+                            </span>
+                          )}
+                          {timelineVal && (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-[#5856D6]/10 text-[#5856D6]">
+                              ⏱ {timelineVal}
+                            </span>
+                          )}
                         </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 max-w-md">
-                      <p className="text-[13px] font-semibold text-[var(--apple-text-primary)] truncate">
-                        {sub.subject}
-                      </p>
-                      <p className="text-[12px] text-[var(--apple-text-secondary)] truncate mt-0.5">
-                        {sub.message}
-                      </p>
-                    </td>
-                    <td className="px-6 py-4" onClick={(e) => e.stopPropagation()}>
-                      <select
-                        value={sub.priority || 'Medium'}
-                        onChange={(e) =>
-                          updateStatusOrPriority(sub.id, {
-                            priority: e.target.value as 'Low' | 'Medium' | 'High',
-                          })
-                        }
-                        aria-label={`Priority for ${sub.name}`}
-                        className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border outline-none cursor-pointer ${getPriorityBadge(
-                          sub.priority
-                        )}`}
-                      >
-                        <option value="Low">Low</option>
-                        <option value="Medium">Medium</option>
-                        <option value="High">High</option>
-                      </select>
-                    </td>
-                    <td className="px-6 py-4 text-[12px] font-mono text-[var(--apple-text-secondary)]">
-                      {sub.date}
-                    </td>
-                    <td className="px-6 py-4">
-                      <span
-                        className={`text-[11px] font-semibold uppercase px-2.5 py-1 rounded-full ${getStatusBadge(
-                          sub.status
-                        )}`}
-                      >
-                        {sub.status}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex justify-end gap-1.5">
-                        <button
-                          onClick={() => openDetail(sub)}
-                          className="px-3 py-1.5 rounded-[9px] apple-subcard text-[12px] font-medium text-[var(--apple-text-primary)] hover:text-[var(--apple-blue)]"
+                        <p className="text-[13px] font-semibold text-[var(--apple-text-primary)] truncate">
+                          {sub.subject}
+                        </p>
+                        <p className="text-[12px] text-[var(--apple-text-secondary)] truncate mt-0.5">
+                          {sub.message}
+                        </p>
+                      </td>
+
+                      <td className="px-5 py-4">{renderPaymentBadge(sub)}</td>
+
+                      <td className="px-5 py-4" onClick={(e) => e.stopPropagation()}>
+                        <select
+                          value={sub.priority || 'Medium'}
+                          onChange={(e) =>
+                            updateStatusOrPriority(sub.id, {
+                              priority: e.target.value as 'Low' | 'Medium' | 'High',
+                            })
+                          }
+                          aria-label={`Priority for ${sub.name}`}
+                          className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border outline-none cursor-pointer ${getPriorityBadge(
+                            sub.priority
+                          )}`}
                         >
-                          Manage
-                        </button>
-                        <button
-                          onClick={() => deleteSubmission(sub.id)}
-                          className="w-8 h-8 rounded-[9px] apple-subcard text-[var(--apple-text-secondary)] hover:text-[#FF3B30] flex items-center justify-center"
-                          title="Delete Inquiry"
+                          <option value="Low">Low</option>
+                          <option value="Medium">Medium</option>
+                          <option value="High">High</option>
+                        </select>
+                      </td>
+
+                      <td className="px-5 py-4 text-[12px] font-mono text-[var(--apple-text-secondary)] whitespace-nowrap">
+                        {sub.date}
+                      </td>
+
+                      <td className="px-5 py-4">
+                        <span
+                          className={`text-[11px] font-semibold uppercase px-2.5 py-1 rounded-full ${getStatusBadge(
+                            sub.status
+                          )}`}
                         >
-                          <i className="fas fa-trash-can text-xs"></i>
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                          {sub.status}
+                        </span>
+                      </td>
+
+                      <td className="px-5 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-end gap-1.5">
+                          <button
+                            onClick={() => openDetail(sub)}
+                            className="px-3 py-1.5 rounded-[9px] apple-subcard text-[12px] font-medium text-[var(--apple-text-primary)] hover:text-[var(--apple-blue)] whitespace-nowrap"
+                          >
+                            View Details
+                          </button>
+                          <button
+                            onClick={() => deleteSubmission(sub.id)}
+                            className="w-8 h-8 rounded-[9px] apple-subcard text-[var(--apple-text-secondary)] hover:text-[#FF3B30] flex items-center justify-center shrink-0"
+                            title="Delete Inquiry"
+                          >
+                            <i className="fas fa-trash-can text-xs"></i>
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-6 py-16 text-center">
+                  <td colSpan={7} className="px-6 py-16 text-center">
                     <div className="max-w-sm mx-auto space-y-2">
                       <div className="w-11 h-11 rounded-2xl bg-[#4e45e1]/10 text-[var(--apple-blue)] flex items-center justify-center mx-auto">
                         <i className="fas fa-envelope-open-text"></i>
                       </div>
                       <p className="text-[14px] font-semibold text-[var(--apple-text-primary)]">
-                        No client inquiries found
+                        No matching client inquiries found
                       </p>
                       <p className="text-[12px] text-[var(--apple-text-secondary)]">
-                        Inquiries submitted from devinquire.com or logged manually will appear here.
+                        Form submissions and Stripe payment confirmations from devinquire.com appear here automatically.
                       </p>
                     </div>
                   </td>
@@ -581,21 +909,32 @@ const ContactSubmissions: React.FC = () => {
         </div>
       </div>
 
-      {/* Manage / Reply Inquiry Modal */}
+      {/* Manage Inquiry, Submitted Form Data & Payment Confirmation Modal */}
       {selectedSubmission && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="apple-glass rounded-[24px] w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
-            <div className="px-6 py-4 border-b border-[var(--apple-border)] flex items-center justify-between">
+          <div className="apple-glass rounded-[24px] w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh] animate-in zoom-in-95 duration-200">
+            <div className="px-6 py-4 border-b border-[var(--apple-border)] flex items-center justify-between gap-3">
               <div className="flex items-center gap-3 min-w-0">
-                <div className="w-10 h-10 rounded-full bg-[#4e45e1]/12 text-[var(--apple-blue)] flex items-center justify-center font-semibold text-[15px] shrink-0">
+                <div
+                  className={`w-10 h-10 rounded-full flex items-center justify-center font-semibold text-[15px] shrink-0 ${
+                    selectedSubmission.payment_status === 'paid'
+                      ? 'bg-[#28CD41]/15 text-[#1E8E3E] dark:text-[#30D158]'
+                      : 'bg-[#4e45e1]/12 text-[var(--apple-blue)]'
+                  }`}
+                >
                   {(selectedSubmission.name || 'C').charAt(0).toUpperCase()}
                 </div>
                 <div className="min-w-0">
-                  <h3 className="text-[16px] font-semibold text-[var(--apple-text-primary)] truncate">
-                    {selectedSubmission.subject}
-                  </h3>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-[16px] font-semibold text-[var(--apple-text-primary)] truncate">
+                      {selectedSubmission.subject}
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-[#4e45e1]/12 text-[var(--apple-blue)]">
+                      {selectedSubmission.form_source || 'Website Form'}
+                    </span>
+                  </div>
                   <p className="text-[12px] text-[var(--apple-text-secondary)] truncate">
-                    From {selectedSubmission.name} ({selectedSubmission.email}) • {selectedSubmission.date}
+                    From {selectedSubmission.name} ({selectedSubmission.email}) • Received {selectedSubmission.date}
                   </p>
                 </div>
               </div>
@@ -608,6 +947,327 @@ const ContactSubmissions: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveReplyAndNotes} className="p-6 overflow-y-auto space-y-5 flex-1">
+              {/* SECTION 1: PAYMENT CONFIRMATION CARD */}
+              <div
+                className={`p-4 rounded-[16px] border space-y-3.5 ${
+                  paymentEdit.payment_status === 'paid'
+                    ? 'bg-[#28CD41]/[0.06] border-[#28CD41]/30'
+                    : paymentEdit.payment_status === 'pending'
+                    ? 'bg-[#FF9500]/[0.06] border-[#FF9500]/30'
+                    : 'apple-subcard border-[var(--apple-border)]'
+                }`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <div
+                      className={`w-9 h-9 rounded-[11px] flex items-center justify-center shrink-0 ${
+                        paymentEdit.payment_status === 'paid'
+                          ? 'bg-[#28CD41]/20 text-[#1E8E3E] dark:text-[#30D158]'
+                          : paymentEdit.payment_status === 'pending'
+                          ? 'bg-[#FF9500]/20 text-[#D97706]'
+                          : 'bg-[#4e45e1]/12 text-[var(--apple-blue)]'
+                      }`}
+                    >
+                      <i
+                        className={`fas ${
+                          paymentEdit.payment_status === 'paid'
+                            ? 'fa-shield-check'
+                            : paymentEdit.payment_status === 'pending'
+                            ? 'fa-hourglass-half'
+                            : 'fa-credit-card'
+                        } text-sm`}
+                      ></i>
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-[13.5px] font-bold text-[var(--apple-text-primary)]">
+                          Payment Confirmation
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[10.5px] font-bold uppercase ${
+                            paymentEdit.payment_status === 'paid'
+                              ? 'bg-[#28CD41]/20 text-[#1E8E3E] dark:text-[#30D158]'
+                              : paymentEdit.payment_status === 'pending'
+                              ? 'bg-[#FF9500]/20 text-[#D97706]'
+                              : paymentEdit.payment_status === 'cancelled'
+                              ? 'bg-[#FF3B30]/15 text-[#FF3B30]'
+                              : 'bg-black/[0.06] dark:bg-white/[0.08] text-[var(--apple-text-secondary)]'
+                          }`}
+                        >
+                          {paymentEdit.payment_status === 'paid'
+                            ? `✓ Confirmed • ₹${paymentEdit.payment_amount || 399}/-`
+                            : paymentEdit.payment_status === 'pending'
+                            ? `⏳ Checkout Pending • ₹${paymentEdit.payment_amount || 399}/-`
+                            : paymentEdit.payment_status === 'opt_out'
+                            ? 'Free Query (Opted Out)'
+                            : paymentEdit.payment_status === 'cancelled'
+                            ? 'Checkout Cancelled'
+                            : 'No Pre-Booking Payment'}
+                        </span>
+                      </div>
+                      <p className="text-[11.5px] text-[var(--apple-text-secondary)] mt-0.5">
+                        {paymentEdit.payment_status === 'paid'
+                          ? `${formatPlanLabel(paymentEdit.payment_plan, paymentEdit.payment_amount)}${
+                              selectedSubmission.paid_at
+                                ? ` • Paid ${new Date(selectedSubmission.paid_at).toLocaleString()}`
+                                : ''
+                            }`
+                          : 'Pre-booking status from devinquire.com Stripe Checkout (or confirm manually below).'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {paymentEdit.payment_status !== 'paid' && (
+                    <button
+                      type="button"
+                      onClick={handleQuickConfirmPayment}
+                      className="px-3.5 py-2 rounded-[10px] bg-[#28CD41] hover:opacity-95 text-white text-[12px] font-semibold inline-flex items-center gap-1.5 shrink-0 self-start sm:self-center shadow-sm"
+                    >
+                      <i className="fas fa-check text-[11px] badge-white"></i>
+                      <span className="badge-white">Mark Payment Confirmed</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Editable Payment Confirmation Fields */}
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-2 border-t border-[var(--apple-border)]/60">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                      Payment State
+                    </label>
+                    <select
+                      value={paymentEdit.payment_status}
+                      onChange={(e) => {
+                        const nextSt = e.target.value as InquiryPaymentStatus;
+                        setPaymentEdit((prev) => ({
+                          ...prev,
+                          payment_status: nextSt,
+                          payment_amount:
+                            nextSt === 'paid' && !prev.payment_amount
+                              ? prev.payment_plan === 'service_confirmation'
+                                ? 99
+                                : 399
+                              : prev.payment_amount,
+                        }));
+                      }}
+                      className="w-full apple-input px-2.5 py-1.5 text-[12px]"
+                    >
+                      <option value="none">None / Standard</option>
+                      <option value="opt_out">Free Query (Opt-Out)</option>
+                      <option value="pending">Pending Checkout</option>
+                      <option value="paid">✓ Paid Confirmed</option>
+                      <option value="cancelled">Cancelled</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                      Pre-Booking Tier
+                    </label>
+                    <select
+                      value={paymentEdit.payment_plan || 'consultation'}
+                      onChange={(e) => {
+                        const nextPlan = e.target.value;
+                        setPaymentEdit((prev) => ({
+                          ...prev,
+                          payment_plan: nextPlan,
+                          payment_amount:
+                            nextPlan === 'service_confirmation'
+                              ? 99
+                              : nextPlan === 'consultation'
+                              ? 399
+                              : prev.payment_amount,
+                        }));
+                      }}
+                      className="w-full apple-input px-2.5 py-1.5 text-[12px]"
+                    >
+                      <option value="consultation">1:1 Consultation (₹399)</option>
+                      <option value="service_confirmation">Service Pass (₹99)</option>
+                      <option value="custom">Custom Payment</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                      Amount (INR ₹)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={paymentEdit.payment_amount}
+                      onChange={(e) =>
+                        setPaymentEdit((prev) => ({
+                          ...prev,
+                          payment_amount: Number(e.target.value) || 0,
+                        }))
+                      }
+                      className="w-full apple-input px-2.5 py-1.5 text-[12px]"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                        Stripe / Txn Ref ID
+                      </label>
+                      {paymentEdit.payment_reference && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            copyToClipboard(paymentEdit.payment_reference, 'Payment Reference')
+                          }
+                          className="text-[10px] font-semibold text-[var(--apple-blue)] hover:underline"
+                        >
+                          Copy
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      value={paymentEdit.payment_reference}
+                      onChange={(e) =>
+                        setPaymentEdit((prev) => ({
+                          ...prev,
+                          payment_reference: e.target.value,
+                        }))
+                      }
+                      placeholder="cs_test_… / pi_… / UPI ref"
+                      className="w-full apple-input px-2.5 py-1.5 text-[12px] font-mono"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* SECTION 2: SUBMITTED WEBSITE FORM DATA GRID */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-[12px] font-semibold uppercase tracking-wider text-[var(--apple-text-secondary)]">
+                    Submitted Form Data (devinquire.com)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    {(selectedSubmission.phone || selectedSubmission.formData?.phone) && (
+                      <a
+                        href={`https://wa.me/${String(
+                          selectedSubmission.phone || selectedSubmission.formData?.phone
+                        ).replace(/[^0-9]/g, '')}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[11.5px] font-semibold text-[#1E8E3E] dark:text-[#30D158] hover:underline inline-flex items-center gap-1"
+                      >
+                        <i className="fab fa-whatsapp"></i>
+                        <span>WhatsApp Client</span>
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 apple-subcard p-4 rounded-[16px] text-[12.5px]">
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                      Full Name
+                    </p>
+                    <p className="font-semibold text-[var(--apple-text-primary)] mt-0.5">
+                      {selectedSubmission.name || '—'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                      Email Address
+                    </p>
+                    <a
+                      href={`mailto:${selectedSubmission.email}`}
+                      className="font-semibold text-[var(--apple-blue)] hover:underline break-all mt-0.5 inline-block"
+                    >
+                      {selectedSubmission.email || '—'}
+                    </a>
+                  </div>
+
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                      Phone / WhatsApp
+                    </p>
+                    {selectedSubmission.phone || selectedSubmission.formData?.phone ? (
+                      <a
+                        href={`tel:${selectedSubmission.phone || selectedSubmission.formData?.phone}`}
+                        className="font-semibold text-[var(--apple-text-primary)] hover:text-[var(--apple-blue)] mt-0.5 inline-block"
+                      >
+                        {selectedSubmission.phone || selectedSubmission.formData?.phone}
+                      </a>
+                    ) : (
+                      <p className="text-[var(--apple-text-tertiary)] mt-0.5">Not provided</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                      Company / Organization
+                    </p>
+                    <p className="font-medium text-[var(--apple-text-primary)] mt-0.5">
+                      {selectedSubmission.company || selectedSubmission.formData?.company || 'Not provided'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                      Selected Service / Product
+                    </p>
+                    <p className="font-semibold text-[var(--apple-text-primary)] mt-0.5">
+                      {selectedSubmission.service ||
+                        selectedSubmission.formData?.product ||
+                        selectedSubmission.formData?.service ||
+                        'General Engineering Inquiry'}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                      Project Timeline
+                    </p>
+                    <p className="font-medium text-[var(--apple-text-primary)] mt-0.5">
+                      {formatTimeline(
+                        selectedSubmission.timeline || selectedSubmission.formData?.timeline
+                      ) || 'Flexible / Not specified'}
+                    </p>
+                  </div>
+
+                  {Array.isArray(selectedSubmission.formData?.categories) &&
+                    selectedSubmission.formData.categories.length > 0 && (
+                      <div className="sm:col-span-2">
+                        <p className="text-[10.5px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
+                          Subscribed Topics
+                        </p>
+                        <p className="font-medium text-[var(--apple-text-primary)] mt-0.5">
+                          {selectedSubmission.formData.categories.join(', ')}
+                        </p>
+                      </div>
+                    )}
+
+                  {selectedSubmission.formData?.page_url && (
+                    <div className="sm:col-span-3 pt-2 border-t border-[var(--apple-border)]/50 flex items-center justify-between gap-2 text-[11px] text-[var(--apple-text-tertiary)]">
+                      <span className="truncate">
+                        Submitted from: <strong className="font-mono">{selectedSubmission.formData.page_url}</strong>
+                      </span>
+                      {selectedSubmission.formData?.submitted_at && (
+                        <span className="shrink-0">
+                          {new Date(selectedSubmission.formData.submitted_at).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Client Message */}
+              <div className="space-y-1.5">
+                <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
+                  Project Brief / Submitted Message
+                </label>
+                <div className="apple-subcard p-4 rounded-[14px] text-[13px] text-[var(--apple-text-primary)] leading-relaxed whitespace-pre-wrap">
+                  {selectedSubmission.message}
+                </div>
+              </div>
+
               {/* Status & Priority Controls */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
@@ -655,16 +1315,6 @@ const ContactSubmissions: React.FC = () => {
                 </div>
               </div>
 
-              {/* Client Message */}
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
-                  Client Message
-                </label>
-                <div className="apple-subcard p-4 rounded-[14px] text-[13px] text-[var(--apple-text-primary)] leading-relaxed whitespace-pre-wrap">
-                  {selectedSubmission.message}
-                </div>
-              </div>
-
               {/* Compose Response */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -682,7 +1332,7 @@ const ContactSubmissions: React.FC = () => {
                   </a>
                 </div>
                 <textarea
-                  rows={4}
+                  rows={3}
                   value={replyText}
                   onChange={(e) => setReplyText(e.target.value)}
                   placeholder="Write response to client…"
@@ -725,7 +1375,7 @@ const ContactSubmissions: React.FC = () => {
                     disabled={isSavingDetail}
                     className="px-5 py-2.5 apple-pill-btn rounded-[12px] text-[13px] font-semibold disabled:opacity-50"
                   >
-                    {isSavingDetail ? 'Saving…' : 'Save Reply & Mark Replied'}
+                    {isSavingDetail ? 'Saving…' : 'Save Changes'}
                   </button>
                 </div>
               </div>
@@ -749,7 +1399,7 @@ const ContactSubmissions: React.FC = () => {
                 <i className="fas fa-times text-xs"></i>
               </button>
             </div>
-            <form onSubmit={handleCreateInquiry} className="p-6 space-y-4">
+            <form onSubmit={handleCreateInquiry} className="p-6 space-y-4 max-h-[85vh] overflow-y-auto">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
@@ -781,6 +1431,17 @@ const ContactSubmissions: React.FC = () => {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
+                    Phone / WhatsApp
+                  </label>
+                  <input
+                    value={newInquiry.phone}
+                    onChange={(e) => setNewInquiry({ ...newInquiry, phone: e.target.value })}
+                    placeholder="+91 98765 43210"
+                    className="w-full apple-input px-3.5 py-2 text-[13px]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
                     Company / Organization
                   </label>
                   <input
@@ -790,23 +1451,62 @@ const ContactSubmissions: React.FC = () => {
                     className="w-full apple-input px-3.5 py-2 text-[13px]"
                   />
                 </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
-                    Priority
+                    Service / Product
+                  </label>
+                  <input
+                    value={newInquiry.service}
+                    onChange={(e) => setNewInquiry({ ...newInquiry, service: e.target.value })}
+                    placeholder="Custom Web Application"
+                    className="w-full apple-input px-3.5 py-2 text-[13px]"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
+                    Payment Confirmation
                   </label>
                   <select
-                    value={newInquiry.priority}
-                    onChange={(e) =>
-                      setNewInquiry({
-                        ...newInquiry,
-                        priority: e.target.value as 'Low' | 'Medium' | 'High',
-                      })
+                    value={
+                      newInquiry.payment_status === 'paid'
+                        ? newInquiry.payment_plan || 'consultation'
+                        : 'none'
                     }
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === 'consultation') {
+                        setNewInquiry({
+                          ...newInquiry,
+                          payment_status: 'paid',
+                          payment_plan: 'consultation',
+                          payment_amount: 399,
+                          priority: 'High',
+                        });
+                      } else if (val === 'service_confirmation') {
+                        setNewInquiry({
+                          ...newInquiry,
+                          payment_status: 'paid',
+                          payment_plan: 'service_confirmation',
+                          payment_amount: 99,
+                          priority: 'High',
+                        });
+                      } else {
+                        setNewInquiry({
+                          ...newInquiry,
+                          payment_status: 'none',
+                          payment_plan: '',
+                          payment_amount: 0,
+                        });
+                      }
+                    }}
                     className="w-full apple-input px-3.5 py-2 text-[13px]"
                   >
-                    <option value="Low">Low</option>
-                    <option value="Medium">Medium</option>
-                    <option value="High">High</option>
+                    <option value="none">No Payment / Standard</option>
+                    <option value="consultation">✓ Paid ₹399/- (1:1 Consultation)</option>
+                    <option value="service_confirmation">✓ Paid ₹99/- (Service Pass)</option>
                   </select>
                 </div>
               </div>
@@ -830,7 +1530,7 @@ const ContactSubmissions: React.FC = () => {
                 </label>
                 <textarea
                   required
-                  rows={4}
+                  rows={3}
                   value={newInquiry.message}
                   onChange={(e) => setNewInquiry({ ...newInquiry, message: e.target.value })}
                   placeholder="Describe the client's requirements, timeline, and budget…"
@@ -920,7 +1620,7 @@ const ContactSubmissions: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-[13px] font-semibold text-[var(--apple-text-primary)]">
-                      Mail Delivery Configuration (SMTP & Web3Forms Relay)
+                      Mail Delivery Configuration (SMTP &amp; Web3Forms Relay)
                     </p>
                     <p className="text-[11px] text-[var(--apple-text-secondary)]">
                       {config.smtpUser && config.smtpPass
@@ -1018,7 +1718,7 @@ const ContactSubmissions: React.FC = () => {
                       Auto-Reply Template
                     </p>
                     <p className="text-[11px] text-[var(--apple-text-secondary)]">
-                      Pre-fill & send client acknowledgement
+                      Pre-fill &amp; send client acknowledgement
                     </p>
                   </div>
                   <input
