@@ -122,10 +122,23 @@ const DEFAULT_SOCIAL_CONFIG = {
   connectedPages: [],
   connectedAt: null,
   lastVerifiedAt: null,
+  socialMinIntervalMinutes: 30,
+  maxDailySocialPosts: 12,
+  facebookCooldownUntil: null,
+  instagramCooldownUntil: null,
+  lastFacebookPublishedAt: null,
+  lastInstagramPublishedAt: null,
   lastSyncAt: null,
   lastSyncedCount: 0,
   lastDispatchError: null,
 };
+
+function isMetaRateLimitError(msg = "", code = null) {
+  if ([4, 9, 17, 32, 368, 613].includes(Number(code))) return true;
+  return /too many actions|rate limit|going too fast|limit reached|temporarily blocked|misusing this feature|spam/i.test(
+    String(msg || "")
+  );
+}
 
 function slugifyText(text) {
   return String(text || "")
@@ -609,6 +622,9 @@ async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
     dispatched: false,
     notConfigured: false,
     alreadyPublished: false,
+    rateLimited: false,
+    deferredToQueue: false,
+    queueNote: null,
     deliveryChannel: "studio_feed",
     externalPostId: socialPost.externalPostId || null,
     externalUrl: socialPost.externalUrl || null,
@@ -675,6 +691,39 @@ async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
       ? "Facebook Page is connected, but no Instagram Business account is linked to this Page. In Facebook Page → Settings → Linked Accounts, link your Instagram Professional account, then reconnect."
       : "Instagram Business account is not connected yet. Click 'Connect IG & FB' to connect.";
     return results;
+  }
+
+  // Anti-Spam Cooldown & Burst Rate-Limit Pacing Guard for Meta Graph API
+  const isIgPlatform = socialPost.platform === "instagram";
+  const cooldownField = isIgPlatform ? "instagramCooldownUntil" : "facebookCooldownUntil";
+  const lastPubField = isIgPlatform ? "lastInstagramPublishedAt" : "lastFacebookPublishedAt";
+  const usingMetaApi = (isIgPlatform && hasIgCreds) || (!isIgPlatform && hasFbCreds);
+
+  if (usingMetaApi) {
+    const cooldownMs = socialCfg[cooldownField]
+      ? new Date(socialCfg[cooldownField]).getTime()
+      : 0;
+    if (cooldownMs > Date.now()) {
+      const minsLeft = Math.max(1, Math.ceil((cooldownMs - Date.now()) / 60000));
+      results.rateLimited = true;
+      results.deferredToQueue = true;
+      results.queueNote = `Queued — Meta anti-spam cooldown active (${minsLeft}m left). Will auto-publish 1 post every ${
+        Number(socialCfg.socialMinIntervalMinutes) || 30
+      }m once cooldown clears.`;
+      return results;
+    }
+
+    if (!options.manualPublish) {
+      const minGapMins = Math.max(10, Number(socialCfg.socialMinIntervalMinutes) || 30);
+      const lastPubMs = socialCfg[lastPubField]
+        ? new Date(socialCfg[lastPubField]).getTime()
+        : 0;
+      if (lastPubMs && Date.now() - lastPubMs < minGapMins * 60 * 1000) {
+        results.deferredToQueue = true;
+        results.queueNote = `Queued in Anti-Spam Drip Scheduler (spaced ${minGapMins}m apart to prevent Meta rate limits).`;
+        return results;
+      }
+    }
   }
 
   // 1. Direct Meta Graph API Publishing
@@ -910,6 +959,26 @@ async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
     }
   }
 
+  // Record pacing timestamp on Meta success, or trigger 60m anti-spam cooldown if Meta rate-limited
+  if (results.dispatched && results.deliveryChannel.includes("meta_graph_api") && !results.alreadyPublished) {
+    await saveSocialConfig({
+      [lastPubField]: results.publishedAt,
+      [cooldownField]: null,
+      lastDispatchError: null,
+    }).catch(() => {});
+  } else if (results.error && isMetaRateLimitError(results.error)) {
+    const cooldownIso = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await saveSocialConfig({
+      [cooldownField]: cooldownIso,
+      lastDispatchError: null,
+    }).catch(() => {});
+    results.rateLimited = true;
+    results.deferredToQueue = true;
+    results.queueNote =
+      "Meta rate limit ('User is performing too many actions') triggered — paused live API calls for 60m and queued this post for automatic paced publishing.";
+    results.error = null;
+  }
+
   return results;
   } finally {
     await releaseDistributedLock(publishLockKey);
@@ -956,16 +1025,31 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
   });
 
   const shouldAttemptExternalPublish =
-    options.forcePublish ||
-    (blog.status === "published" && socialCfg.autoPublishOnBlogPublish !== false);
+    !options.skipExternalPublish &&
+    !options.queueOnly &&
+    (options.forcePublish ||
+      (blog.status === "published" && socialCfg.autoPublishOnBlogPublish !== false));
 
-  let nextStatus = existingParsed?.status === "published" ? "published" : "draft";
+  let nextStatus =
+    existingParsed?.status === "published"
+      ? "published"
+      : options.queueOnly
+      ? "queued"
+      : existingParsed?.status === "queued"
+      ? "queued"
+      : "draft";
+
   let dispatchInfo = {
     dispatched: Boolean(existingParsed?.externalPostId),
     deliveryChannel: existingParsed?.deliveryChannel || "studio_feed",
     externalPostId: existingParsed?.externalPostId || null,
     externalUrl: existingParsed?.externalUrl || null,
     publishedAt: existingParsed?.publishedAt || null,
+    queuedReason: options.queueOnly
+      ? `Queued in Anti-Spam Drip Scheduler (publishes 1 post every ${
+          Number(socialCfg.socialMinIntervalMinutes) || 30
+        }m).`
+      : existingParsed?.queuedReason || null,
     lastDispatchError: existingParsed?.lastDispatchError || null,
   };
 
@@ -980,6 +1064,7 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
   ) {
     const dispatched = await dispatchToExternalSocial(built, socialCfg, {
       forceRepublish: Boolean(options.forceRepublish),
+      manualPublish: Boolean(options.manualPublish),
     });
     if (dispatched.dispatched) {
       nextStatus = "published";
@@ -989,10 +1074,21 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
         externalPostId: dispatched.externalPostId,
         externalUrl: dispatched.externalUrl,
         publishedAt: dispatched.publishedAt,
+        queuedReason: null,
+        lastDispatchError: null,
+      };
+    } else if (dispatched.deferredToQueue) {
+      nextStatus = "queued";
+      dispatchInfo = {
+        dispatched: false,
+        deliveryChannel: "drip_queue",
+        externalPostId: existingParsed?.externalPostId || null,
+        externalUrl: existingParsed?.externalUrl || null,
+        publishedAt: existingParsed?.publishedAt || null,
+        queuedReason: dispatched.queueNote || "Queued for paced publishing.",
         lastDispatchError: null,
       };
     } else {
-      // Keep as draft if external publish failed or account isn't connected yet so user sees exact status
       nextStatus = "draft";
       dispatchInfo = {
         dispatched: false,
@@ -1000,6 +1096,7 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
         externalPostId: existingParsed?.externalPostId || null,
         externalUrl: existingParsed?.externalUrl || null,
         publishedAt: existingParsed?.publishedAt || null,
+        queuedReason: null,
         lastDispatchError: dispatched.error,
       };
       if (dispatched.error && !dispatched.notConfigured) {
@@ -1058,6 +1155,9 @@ async function syncBlogToSocialChannels(blog, socialOptions = {}) {
       forceOverwrite: Boolean(socialOptions.forceOverwrite),
       forcePublish: Boolean(socialOptions.forcePublish),
       forceRepublish: Boolean(socialOptions.forceRepublish),
+      manualPublish: Boolean(socialOptions.manualPublish),
+      skipExternalPublish: Boolean(socialOptions.skipExternalPublish),
+      queueOnly: Boolean(socialOptions.queueOnly),
     });
     synced.push(ig);
   }
@@ -1068,6 +1168,9 @@ async function syncBlogToSocialChannels(blog, socialOptions = {}) {
       forceOverwrite: Boolean(socialOptions.forceOverwrite),
       forcePublish: Boolean(socialOptions.forcePublish),
       forceRepublish: Boolean(socialOptions.forceRepublish),
+      manualPublish: Boolean(socialOptions.manualPublish),
+      skipExternalPublish: Boolean(socialOptions.skipExternalPublish),
+      queueOnly: Boolean(socialOptions.queueOnly),
     });
     synced.push(fb);
   }
@@ -1285,18 +1388,24 @@ async function runDailyDevAutomation({
         .catch(() => {});
 
       if (shouldSyncSocial) {
-        const socialItems = await syncBlogToSocialChannels({
-          id: postId,
-          title: cleanTitle,
-          slug,
-          excerpt,
-          content,
-          category: resolvedCategory,
-          tags,
-          status,
-          author_name: authorName,
-          featured_image: node.image || null,
-        });
+        // Publish at most the 1st imported story immediately; queue the rest for 30m anti-spam drip delivery
+        const socialItems = await syncBlogToSocialChannels(
+          {
+            id: postId,
+            title: cleanTitle,
+            slug,
+            excerpt,
+            content,
+            category: resolvedCategory,
+            tags,
+            status,
+            author_name: authorName,
+            featured_image: node.image || null,
+          },
+          {
+            queueOnly: status === "published" && importedPosts.length >= 1,
+          }
+        );
         socialGeneratedCount += socialItems.length;
       }
     }
@@ -1377,21 +1486,175 @@ async function scheduleAutomationTimer() {
   }
 }
 
+async function healRateLimitedSocialPosts() {
+  await ensureSocialPostsTable();
+  const res = await db.query(
+    "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts ORDER BY id DESC"
+  );
+  const rows = res.rows || [];
+  let healedCount = 0;
+  let fbRateLimitedSeen = false;
+  let igRateLimitedSeen = false;
+  let queuedIg = 0;
+  let queuedFb = 0;
+
+  for (const row of rows) {
+    const parsed = parseSocialRow(row);
+    if (parsed.lastDispatchError && isMetaRateLimitError(parsed.lastDispatchError)) {
+      const isIg = parsed.platform === "instagram";
+      if (isIg) igRateLimitedSeen = true;
+      else fbRateLimitedSeen = true;
+
+      // Queue only the newest 3 posts per platform for paced auto-delivery; keep older backfill items as clean drafts
+      const shouldQueue = isIg ? queuedIg < 3 : queuedFb < 3;
+      if (shouldQueue) {
+        if (isIg) queuedIg += 1;
+        else queuedFb += 1;
+      }
+
+      const nextStatus = shouldQueue ? "queued" : "draft";
+      const nextPayload = {
+        ...parsed,
+        status: nextStatus,
+        lastDispatchError: null,
+        queuedReason: shouldQueue
+          ? "Queued for paced auto-publishing after Meta anti-spam cooldown clears (1 post every 30m)."
+          : null,
+        updatedAt: new Date().toISOString(),
+      };
+      await db
+        .query(
+          "UPDATE social_posts SET title = $1, caption = $2, status = $3, payload = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
+          [nextPayload.title, nextPayload.caption, nextStatus, JSON.stringify(nextPayload), row.id]
+        )
+        .catch(() => {});
+      healedCount += 1;
+    }
+  }
+
+  if (fbRateLimitedSeen || igRateLimitedSeen) {
+    const cfg = await loadSocialConfig();
+    const cooldownTarget = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    await saveSocialConfig({
+      facebookCooldownUntil:
+        fbRateLimitedSeen &&
+        (!cfg.facebookCooldownUntil ||
+          new Date(cfg.facebookCooldownUntil).getTime() < Date.now())
+          ? cooldownTarget
+          : cfg.facebookCooldownUntil,
+      instagramCooldownUntil:
+        igRateLimitedSeen &&
+        (!cfg.instagramCooldownUntil ||
+          new Date(cfg.instagramCooldownUntil).getTime() < Date.now())
+          ? cooldownTarget
+          : cfg.instagramCooldownUntil,
+      lastDispatchError: null,
+    });
+  }
+
+  return healedCount;
+}
+
+async function processSocialDripQueue() {
+  const gotLock = await acquireDistributedLock("social_drip_queue", 90 * 1000);
+  if (!gotLock) return;
+
+  try {
+    await ensureSocialPostsTable();
+    const socialCfg = await loadSocialConfig();
+    const minGapMins = Math.max(10, Number(socialCfg.socialMinIntervalMinutes) || 30);
+
+    for (const plt of ["facebook", "instagram"]) {
+      const hasCreds =
+        plt === "instagram"
+          ? Boolean(socialCfg.instagramAccountId && socialCfg.instagramAccessToken)
+          : Boolean(socialCfg.facebookPageId && socialCfg.facebookAccessToken);
+      const hasWebhook = Boolean(socialCfg.webhookUrl && String(socialCfg.webhookUrl).trim());
+      if (!hasCreds && !hasWebhook) continue;
+
+      const cooldownField = plt === "instagram" ? "instagramCooldownUntil" : "facebookCooldownUntil";
+      const lastPubField = plt === "instagram" ? "lastInstagramPublishedAt" : "lastFacebookPublishedAt";
+
+      const cooldownMs = socialCfg[cooldownField]
+        ? new Date(socialCfg[cooldownField]).getTime()
+        : 0;
+      if (cooldownMs > Date.now()) continue;
+
+      const lastPubMs = socialCfg[lastPubField]
+        ? new Date(socialCfg[lastPubField]).getTime()
+        : 0;
+      if (lastPubMs && Date.now() - lastPubMs < minGapMins * 60 * 1000) continue;
+
+      const qRes = await db.query(
+        "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts WHERE platform = $1 ORDER BY id ASC",
+        [plt]
+      );
+      const nextQueuedRow = (qRes.rows || []).find((r) => r.status === "queued");
+      if (!nextQueuedRow) continue;
+
+      const parsed = parseSocialRow(nextQueuedRow);
+      const dispatched = await dispatchToExternalSocial(parsed, socialCfg, {
+        fromDripQueue: true,
+      });
+
+      if (dispatched.dispatched) {
+        const nextPayload = {
+          ...parsed,
+          status: "published",
+          dispatched: true,
+          deliveryChannel: dispatched.deliveryChannel,
+          externalPostId: dispatched.externalPostId,
+          externalUrl: dispatched.externalUrl,
+          publishedAt: dispatched.publishedAt,
+          queuedReason: null,
+          lastDispatchError: null,
+          updatedAt: new Date().toISOString(),
+        };
+        await db.query(
+          "UPDATE social_posts SET title = $1, caption = $2, status = $3, payload = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
+          [
+            nextPayload.title,
+            nextPayload.caption,
+            "published",
+            JSON.stringify(nextPayload),
+            nextQueuedRow.id,
+          ]
+        );
+      }
+    }
+  } catch (err) {
+    console.warn("[DRIP-QUEUE] Social drip check warning:", err.message);
+  } finally {
+    await releaseDistributedLock("social_drip_queue");
+  }
+}
+
+let dripQueueTimer = null;
+
+function startDripQueueScheduler() {
+  if (dripQueueTimer) clearInterval(dripQueueTimer);
+  dripQueueTimer = setInterval(() => {
+    processSocialDripQueue().catch(() => {});
+  }, 2 * 60 * 1000);
+}
+
 setTimeout(async () => {
   try {
     const gotCleanupLock = await acquireDistributedLock("startup_deduplicate", 60 * 1000);
     if (gotCleanupLock) {
       try {
         const cleaned = await deduplicateEditorialTables();
-        if (cleaned.removedBlogs > 0 || cleaned.removedSocial > 0) {
+        const healed = await healRateLimitedSocialPosts();
+        if (cleaned.removedBlogs > 0 || cleaned.removedSocial > 0 || healed > 0) {
           console.log(
-            `[DEDUP] Cleaned ${cleaned.removedBlogs} duplicate blog posts and ${cleaned.removedSocial} duplicate social posts.`
+            `[DEDUP] Cleaned ${cleaned.removedBlogs} dup blogs, ${cleaned.removedSocial} dup social posts, healed ${healed} rate-limited posts.`
           );
         }
       } finally {
         await releaseDistributedLock("startup_deduplicate");
       }
     }
+    startDripQueueScheduler();
     await scheduleAutomationTimer();
   } catch {
     // ignore on startup
@@ -1600,6 +1863,7 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
     }
 
     const liveDispatched = socialPosts.filter((sp) => sp.status === "published" && sp.dispatched);
+    const queuedSocial = socialPosts.filter((sp) => sp.status === "queued");
     const socialErrors = socialPosts
       .filter((sp) => sp.lastDispatchError)
       .map((sp) => `${sp.platform === "instagram" ? "IG" : "FB"}: ${sp.lastDispatchError}`);
@@ -1610,6 +1874,10 @@ router.post(createPaths, requireMutatingAuth, async (req, res) => {
           ? `Published to Website Blog + Live on ${liveDispatched
               .map((s) => (s.platform === "instagram" ? "Instagram" : "Facebook"))
               .join(" & ")}!`
+          : queuedSocial.length > 0 && socialErrors.length === 0
+          ? `Published to Website Blog + queued for paced auto-publish on ${queuedSocial
+              .map((s) => (s.platform === "instagram" ? "Instagram" : "Facebook"))
+              .join(" & ")}.`
           : socialErrors.length > 0
           ? `Blog published live. Social status: ${socialErrors.join(" | ")}`
           : "Blog published and social drafts populated."
@@ -1682,6 +1950,7 @@ router.post(syncPaths, requireMutatingAuth, async (req, res) => {
 
     const syncedOk = await triggerMainSiteSync();
     const liveSocial = socialSynced.filter((sp) => sp.status === "published" && sp.dispatched);
+    const queuedSocial = socialSynced.filter((sp) => sp.status === "queued");
     const socialErrors = socialSynced
       .filter((sp) => sp.lastDispatchError)
       .map((sp) => `${sp.platform === "instagram" ? "IG" : "FB"}: ${sp.lastDispatchError}`);
@@ -1694,6 +1963,10 @@ router.post(syncPaths, requireMutatingAuth, async (req, res) => {
       syncMsg += ` + published live on ${liveSocial
         .map((s) => (s.platform === "instagram" ? "Instagram" : "Facebook"))
         .join(" & ")}!`;
+    } else if (queuedSocial.length > 0) {
+      syncMsg += ` + queued for paced auto-publish on ${queuedSocial
+        .map((s) => (s.platform === "instagram" ? "Instagram" : "Facebook"))
+        .join(" & ")}.`;
     }
     if (socialErrors.length > 0) {
       syncMsg += ` (Social note: ${socialErrors.join(" | ")})`;
@@ -2050,7 +2323,10 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
       };
 
       if (body.publishNow) {
-        const dispatched = await dispatchToExternalSocial(payloadObj, socialCfg);
+        const freshCfg = await loadSocialConfig();
+        const dispatched = await dispatchToExternalSocial(payloadObj, freshCfg, {
+          manualPublish: true,
+        });
         if (dispatched.dispatched) {
           finalStatus = "published";
           payloadObj.status = "published";
@@ -2059,6 +2335,14 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
           payloadObj.externalPostId = dispatched.externalPostId;
           payloadObj.externalUrl = dispatched.externalUrl;
           payloadObj.publishedAt = dispatched.publishedAt;
+          payloadObj.queuedReason = null;
+          payloadObj.lastDispatchError = null;
+        } else if (dispatched.deferredToQueue) {
+          finalStatus = "queued";
+          payloadObj.status = "queued";
+          payloadObj.queuedReason =
+            dispatched.queueNote ||
+            "Queued in Anti-Spam Drip Scheduler — will auto-publish once Meta cooldown clears.";
           payloadObj.lastDispatchError = null;
         } else {
           finalStatus = "draft";
@@ -2111,13 +2395,19 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
       );
     }
 
+    const queuedSaved = savedPosts.filter((p) => p.status === "queued");
     return sendJsonResponse(
       res,
       "success",
       body.publishNow
-        ? `Published live to ${savedPosts
-            .map((p) => (p.platform === "instagram" ? "Instagram" : "Facebook"))
-            .join(" & ")}!`
+        ? queuedSaved.length > 0
+          ? queuedSaved[0].queuedReason ||
+            `Queued for paced auto-publish on ${queuedSaved
+              .map((p) => (p.platform === "instagram" ? "Instagram" : "Facebook"))
+              .join(" & ")}.`
+          : `Published live to ${savedPosts
+              .map((p) => (p.platform === "instagram" ? "Instagram" : "Facebook"))
+              .join(" & ")}!`
         : "Social post saved.",
       {
         posts: savedPosts,
@@ -2149,8 +2439,32 @@ router.post(socialPublishPaths, requireMutatingAuth, async (req, res) => {
     }
 
     const parsed = parseSocialRow(row);
-    const dispatched = await dispatchToExternalSocial(parsed, socialCfg);
+    const dispatched = await dispatchToExternalSocial(parsed, socialCfg, {
+      manualPublish: true,
+    });
     const platformLabel = parsed.platform === "instagram" ? "Instagram" : "Facebook";
+
+    if (dispatched.deferredToQueue) {
+      const queuedPayload = {
+        ...parsed,
+        status: "queued",
+        queuedReason:
+          dispatched.queueNote ||
+          `Queued for automatic paced publishing on ${platformLabel}.`,
+        lastDispatchError: null,
+        updatedAt: new Date().toISOString(),
+      };
+      await db.query(
+        "UPDATE social_posts SET title = $1, caption = $2, status = $3, payload = $4, updated_at = CURRENT_TIMESTAMP WHERE id = $5",
+        [queuedPayload.title, queuedPayload.caption, "queued", JSON.stringify(queuedPayload), row.id]
+      );
+      return sendJsonResponse(
+        res,
+        "success",
+        queuedPayload.queuedReason,
+        queuedPayload
+      );
+    }
 
     if (!dispatched.dispatched) {
       const failedPayload = {
@@ -2250,6 +2564,7 @@ router.post(socialPopulateAllPaths, requireMutatingAuth, async (req, res) => {
           enableInstagram: true,
           enableFacebook: true,
           forceOverwrite: Boolean(forceOverwrite),
+          skipExternalPublish: true,
         }
       );
       totalSynced += synced.length;
@@ -2315,6 +2630,14 @@ router.post(socialConfigPaths, requireMutatingAuth, async (req, res) => {
     const updated = await saveSocialConfig({
       ...current,
       ...body,
+      socialMinIntervalMinutes: Math.max(
+        10,
+        Number(body.socialMinIntervalMinutes) || current.socialMinIntervalMinutes || 30
+      ),
+      facebookCooldownUntil: body.clearCooldown ? null : current.facebookCooldownUntil || null,
+      instagramCooldownUntil: body.clearCooldown ? null : current.instagramCooldownUntil || null,
+      lastFacebookPublishedAt: current.lastFacebookPublishedAt || null,
+      lastInstagramPublishedAt: current.lastInstagramPublishedAt || null,
       metaAppId: preserveIfBlank(body.metaAppId, current.metaAppId),
       metaAppSecret: preserveIfBlank(body.metaAppSecret, current.metaAppSecret),
       facebookPageId: preserveIfBlank(body.facebookPageId, current.facebookPageId),

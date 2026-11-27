@@ -28,6 +28,11 @@ interface SocialConfig {
   autoSyncOnBlogUpdate: boolean;
   autoPopulateDailyDev: boolean;
   autoPublishOnBlogPublish: boolean;
+  socialMinIntervalMinutes: number;
+  facebookCooldownUntil?: string | null;
+  instagramCooldownUntil?: string | null;
+  lastFacebookPublishedAt?: string | null;
+  lastInstagramPublishedAt?: string | null;
   instagramHandle: string;
   facebookPageName: string;
   defaultHashtags: string[];
@@ -73,6 +78,11 @@ const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
   autoSyncOnBlogUpdate: true,
   autoPopulateDailyDev: true,
   autoPublishOnBlogPublish: true,
+  socialMinIntervalMinutes: 30,
+  facebookCooldownUntil: null,
+  instagramCooldownUntil: null,
+  lastFacebookPublishedAt: null,
+  lastInstagramPublishedAt: null,
   instagramHandle: '@devinquire',
   facebookPageName: 'DevInquire',
   defaultHashtags: ['DevInquire', 'SoftwareEngineering', 'TechInsights'],
@@ -328,7 +338,7 @@ const BlogManagement: React.FC = () => {
   });
 
   // Filters
-  const [statusFilter, setStatusFilter] = useState<'all' | 'published' | 'draft'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'published' | 'queued' | 'draft'>('all');
   const [categoryFilter, setCategoryFilter] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -870,14 +880,14 @@ const BlogManagement: React.FC = () => {
     try {
       const res = await api.blog.publishSocial(post.id);
       if (res.status === 'success') {
-        await fetchSocialPosts();
+        await Promise.all([fetchSocialPosts(), fetchSocialConfig()]);
         showToast(
           res.message ||
             `${post.platform === 'instagram' ? 'Instagram' : 'Facebook'} post published live!`
         );
       }
     } catch (err: any) {
-      await fetchSocialPosts();
+      await Promise.all([fetchSocialPosts(), fetchSocialConfig()]);
       setError(err.message || 'Failed to publish social post.');
     } finally {
       socialPublishLockRef.current = false;
@@ -1162,7 +1172,8 @@ const BlogManagement: React.FC = () => {
 
   const filteredBlogs = useMemo(() => {
     return blogs.filter((b) => {
-      const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
+      const matchesStatus =
+        statusFilter === 'all' || statusFilter === 'queued' || b.status === statusFilter;
       const matchesCategory = categoryFilter === 'All' || b.category === categoryFilter;
       const q = searchQuery.toLowerCase();
       const matchesSearch =
@@ -1196,30 +1207,56 @@ const BlogManagement: React.FC = () => {
     const published = blogs.filter((b) => b.status === 'published').length;
     const drafts = blogs.filter((b) => b.status !== 'published').length;
     const igLive = instagramPosts.filter((p) => p.status === 'published').length;
+    const igQueued = instagramPosts.filter((p) => p.status === 'queued').length;
     const fbLive = facebookPosts.filter((p) => p.status === 'published').length;
+    const fbQueued = facebookPosts.filter((p) => p.status === 'queued').length;
     return {
       total: blogs.length,
       published,
       drafts,
       igTotal: instagramPosts.length,
       igLive,
-      igDrafts: instagramPosts.length - igLive,
+      igQueued,
+      igDrafts: Math.max(0, instagramPosts.length - igLive - igQueued),
       fbTotal: facebookPosts.length,
       fbLive,
-      fbDrafts: facebookPosts.length - fbLive,
+      fbQueued,
+      fbDrafts: Math.max(0, facebookPosts.length - fbLive - fbQueued),
       categories: blogConfig.categories.length,
     };
   }, [blogs, instagramPosts, facebookPosts, blogConfig.categories]);
 
   const activeCounts = useMemo(() => {
     if (activeChannel === 'instagram') {
-      return { total: stats.igTotal, published: stats.igLive, drafts: stats.igDrafts };
+      return {
+        total: stats.igTotal,
+        published: stats.igLive,
+        queued: stats.igQueued,
+        drafts: stats.igDrafts,
+      };
     }
     if (activeChannel === 'facebook') {
-      return { total: stats.fbTotal, published: stats.fbLive, drafts: stats.fbDrafts };
+      return {
+        total: stats.fbTotal,
+        published: stats.fbLive,
+        queued: stats.fbQueued,
+        drafts: stats.fbDrafts,
+      };
     }
-    return { total: stats.total, published: stats.published, drafts: stats.drafts };
+    return { total: stats.total, published: stats.published, queued: 0, drafts: stats.drafts };
   }, [activeChannel, stats]);
+
+  const activeCooldownMinsLeft = useMemo(() => {
+    const raw =
+      activeChannel === 'instagram'
+        ? socialConfig.instagramCooldownUntil
+        : activeChannel === 'facebook'
+        ? socialConfig.facebookCooldownUntil
+        : null;
+    if (!raw) return 0;
+    const diff = new Date(raw).getTime() - Date.now();
+    return diff > 0 ? Math.max(1, Math.ceil(diff / 60000)) : 0;
+  }, [activeChannel, socialConfig.instagramCooldownUntil, socialConfig.facebookCooldownUntil]);
 
   const formatMarkdown = (text: string) => {
     if (!text) return '<p class="text-[var(--apple-text-tertiary)] italic">No content written yet…</p>';
@@ -1611,7 +1648,8 @@ const BlogManagement: React.FC = () => {
               {stats.igTotal}
             </p>
             <p className="text-[11px] text-[var(--apple-text-secondary)]">
-              {stats.igLive} live • {socialConfig.instagramHandle}
+              {stats.igLive} live{stats.igQueued > 0 ? ` • ${stats.igQueued} queued` : ''} •{' '}
+              {socialConfig.instagramHandle}
             </p>
           </div>
           <div className="w-10 h-10 rounded-[12px] bg-gradient-to-tr from-[#F58529] via-[#DD2A7B] to-[#8134AF] text-white flex items-center justify-center shadow-sm">
@@ -1636,7 +1674,8 @@ const BlogManagement: React.FC = () => {
               {stats.fbTotal}
             </p>
             <p className="text-[11px] text-[var(--apple-text-secondary)]">
-              {stats.fbLive} live • {socialConfig.facebookPageName}
+              {stats.fbLive} live{stats.fbQueued > 0 ? ` • ${stats.fbQueued} queued` : ''} •{' '}
+              {socialConfig.facebookPageName}
             </p>
           </div>
           <div className="w-10 h-10 rounded-[12px] bg-[#1877F2] text-white flex items-center justify-center shadow-sm">
@@ -2298,13 +2337,20 @@ const BlogManagement: React.FC = () => {
           <div className="apple-card p-3 flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2.5">
               {/* Status Segmented Control */}
-              <div className="inline-flex items-center h-10 p-1 rounded-[11px] bg-black/[0.04] dark:bg-white/[0.06] border border-[var(--apple-border)]">
+              <div className="inline-flex items-center h-10 p-1 rounded-[11px] bg-black/[0.04] dark:bg-white/[0.06] border border-[var(--apple-border)] overflow-x-auto">
                 {(
-                  [
-                    { key: 'all', label: 'All', count: activeCounts.total },
-                    { key: 'published', label: 'Published', count: activeCounts.published },
-                    { key: 'draft', label: 'Draft', count: activeCounts.drafts },
-                  ] as const
+                  activeChannel === 'blog'
+                    ? ([
+                        { key: 'all', label: 'All', count: activeCounts.total },
+                        { key: 'published', label: 'Published', count: activeCounts.published },
+                        { key: 'draft', label: 'Draft', count: activeCounts.drafts },
+                      ] as const)
+                    : ([
+                        { key: 'all', label: 'All', count: activeCounts.total },
+                        { key: 'published', label: 'Published', count: activeCounts.published },
+                        { key: 'queued', label: 'Queued', count: activeCounts.queued },
+                        { key: 'draft', label: 'Draft', count: activeCounts.drafts },
+                      ] as const)
                 ).map((tab) => {
                   const active = statusFilter === tab.key;
                   return (
@@ -2529,6 +2575,39 @@ const BlogManagement: React.FC = () => {
           ) : (
             /* INSTAGRAM OR FACEBOOK FEED VIEW */
             <>
+              {(activeCooldownMinsLeft > 0 || activeCounts.queued > 0) && (
+                <div className="apple-card p-4 border border-[#4e45e1]/25 bg-[#4e45e1]/[0.05] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-9 h-9 rounded-[10px] bg-[#4e45e1]/15 text-[var(--apple-blue)] flex items-center justify-center shrink-0 mt-0.5">
+                      <i className="fas fa-shield-halved text-sm"></i>
+                    </div>
+                    <div className="space-y-0.5">
+                      <p className="text-[13px] font-semibold text-[var(--apple-text-primary)]">
+                        {activeCooldownMinsLeft > 0
+                          ? `Meta Anti-Spam Cooldown Active (${activeCooldownMinsLeft}m remaining)`
+                          : `Smart Drip Queue Active (${activeCounts.queued} queued)`}
+                      </p>
+                      <p className="text-[12px] text-[var(--apple-text-secondary)] leading-relaxed">
+                        {activeCooldownMinsLeft > 0
+                          ? `Meta paused rapid burst publishing ("User is performing too many actions"). Editorial Studio automatically paused requests so Meta's block clears and will auto-publish queued posts 1 every ${
+                              socialConfig.socialMinIntervalMinutes || 30
+                            } mins.`
+                          : `Posts are spaced ${
+                              socialConfig.socialMinIntervalMinutes || 30
+                            } minutes apart automatically so Instagram & Facebook never flag your account for rapid actions.`}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSocialConfigModal(true)}
+                    className="px-3 py-1.5 apple-secondary-btn rounded-[9px] text-[11.5px] font-semibold shrink-0 self-start sm:self-center"
+                  >
+                    Pacing Settings ({socialConfig.socialMinIntervalMinutes || 30}m)
+                  </button>
+                </div>
+              )}
+
               {filteredSocialPosts.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   {filteredSocialPosts.map((post) => {
@@ -2581,10 +2660,16 @@ const BlogManagement: React.FC = () => {
                                 className={`px-2.5 py-1 rounded-full text-[10px] font-semibold uppercase ${
                                   post.status === 'published'
                                     ? 'bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]'
+                                    : post.status === 'queued'
+                                    ? 'bg-[#4e45e1]/15 text-[var(--apple-blue)]'
                                     : 'bg-[#FF9500]/15 text-[#FF9500]'
                                 }`}
                               >
-                                {post.status === 'published' ? 'Published' : 'Draft'}
+                                {post.status === 'published'
+                                  ? 'Published'
+                                  : post.status === 'queued'
+                                  ? 'Queued • Auto-Drip'
+                                  : 'Draft'}
                               </span>
                               <button
                                 onClick={() => openEditSocialModal(post)}
@@ -2653,6 +2738,13 @@ const BlogManagement: React.FC = () => {
                             </div>
                           )}
 
+                          {post.status === 'queued' && post.queuedReason && (
+                            <div className="p-2.5 rounded-[10px] bg-[#4e45e1]/10 border border-[#4e45e1]/20 text-[var(--apple-blue)] text-[11.5px] leading-snug flex items-start gap-2">
+                              <i className="fas fa-clock mt-0.5 shrink-0"></i>
+                              <span>{post.queuedReason}</span>
+                            </div>
+                          )}
+
                           {post.lastDispatchError && (
                             <div className="p-2.5 rounded-[10px] bg-[#FF3B30]/10 border border-[#FF3B30]/20 text-[#FF3B30] text-[11.5px] leading-snug flex items-start gap-2">
                               <i className="fas fa-circle-exclamation mt-0.5 shrink-0"></i>
@@ -2705,6 +2797,8 @@ const BlogManagement: React.FC = () => {
                                   ? 'fa-spinner fa-spin'
                                   : post.status === 'published'
                                   ? 'fa-paper-plane'
+                                  : post.status === 'queued'
+                                  ? 'fa-clock'
                                   : 'fa-bolt badge-white'
                               } text-[11px]`}
                             ></i>
@@ -2713,6 +2807,8 @@ const BlogManagement: React.FC = () => {
                                 ? 'Publishing…'
                                 : post.status === 'published'
                                 ? 'Re-Dispatch'
+                                : post.status === 'queued'
+                                ? 'Queued (Publish Now)'
                                 : `Publish to ${isIg ? 'Instagram' : 'Facebook'}`}
                             </span>
                           </button>
@@ -3381,6 +3477,32 @@ const BlogManagement: React.FC = () => {
                   }
                   className="w-4 h-4 accent-[#4e45e1]"
                 />
+              </div>
+
+              <div className="apple-subcard p-3.5 rounded-[12px] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-[13px] font-semibold text-[var(--apple-text-primary)]">
+                    Anti-Spam Drip Pacing Interval (Meta Rate-Limit Protection)
+                  </p>
+                  <p className="text-[11px] text-[var(--apple-text-secondary)]">
+                    Minimum gap between automated IG/FB posts to prevent &ldquo;User is performing too many actions&rdquo;
+                  </p>
+                </div>
+                <select
+                  value={socialConfig.socialMinIntervalMinutes || 30}
+                  onChange={(e) =>
+                    setSocialConfig({
+                      ...socialConfig,
+                      socialMinIntervalMinutes: Number(e.target.value) || 30,
+                    })
+                  }
+                  className="apple-input px-3 py-2 text-[12.5px] font-semibold shrink-0"
+                >
+                  <option value={15}>Every 15 minutes</option>
+                  <option value={30}>Every 30 minutes (Recommended)</option>
+                  <option value={60}>Every 60 minutes</option>
+                  <option value={120}>Every 2 hours</option>
+                </select>
               </div>
 
               {/* Account Identity */}

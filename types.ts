@@ -55,12 +55,13 @@ export interface SocialPost {
   category?: string;
   authorName?: string;
   accountHandle?: string;
-  status: 'draft' | 'published';
+  status: 'draft' | 'queued' | 'published';
   dispatched?: boolean;
   deliveryChannel?: string;
   externalPostId?: string | null;
   externalUrl?: string | null;
   publishedAt?: string | null;
+  queuedReason?: string | null;
   lastDispatchError?: string | null;
   customEdited?: boolean;
   createdAt?: string;
