@@ -25,6 +25,9 @@ interface ConnectedMetaPage {
 interface SocialConfig {
   autoPopulateInstagram: boolean;
   autoPopulateFacebook: boolean;
+  autoPopulateInstagramReels?: boolean;
+  autoPopulateFacebookReels?: boolean;
+  socialPublishFormat?: 'images_and_reels' | 'reels_only' | 'images_only' | 'manual_reels';
   autoSyncOnBlogUpdate: boolean;
   autoPopulateDailyDev: boolean;
   autoPublishOnBlogPublish: boolean;
@@ -75,6 +78,9 @@ const DEFAULT_BLOG_CONFIG: BlogConfig = {
 const DEFAULT_SOCIAL_CONFIG: SocialConfig = {
   autoPopulateInstagram: true,
   autoPopulateFacebook: true,
+  autoPopulateInstagramReels: true,
+  autoPopulateFacebookReels: true,
+  socialPublishFormat: 'images_and_reels',
   autoSyncOnBlogUpdate: true,
   autoPopulateDailyDev: true,
   autoPublishOnBlogPublish: true,
@@ -208,9 +214,25 @@ interface BlogManagementProps {
   currentUser?: User | null;
 }
 
+const resolveMediaUrl = (url?: string) => {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  const apiBase = String((import.meta as any).env?.VITE_API_BASE || '/api').replace(/\/$/, '');
+  return url.startsWith('/api/') ? `${apiBase}${url.slice(4)}` : url;
+};
+
+const formatChannelName = (plt: string) => {
+  if (plt === 'instagram_reel') return 'Instagram Reels';
+  if (plt === 'facebook_reel') return 'Facebook Reels';
+  if (plt === 'instagram') return 'Instagram';
+  return 'Facebook';
+};
+
 const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
   const isAdmin = currentUser?.role === 'Admin';
-  const [activeChannel, setActiveChannel] = useState<'blog' | 'instagram' | 'facebook'>('blog');
+  const [activeChannel, setActiveChannel] = useState<
+    'blog' | 'instagram' | 'instagram_reel' | 'facebook' | 'facebook_reel'
+  >('blog');
 
   const [blogs, setBlogs] = useState<any[]>([]);
   const [socialPosts, setSocialPosts] = useState<SocialPost[]>([]);
@@ -359,6 +381,10 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
   // Composer Omnichannel Social state
   const [composerInstagramEnabled, setComposerInstagramEnabled] = useState(true);
   const [composerFacebookEnabled, setComposerFacebookEnabled] = useState(true);
+  const [composerInstagramReelEnabled, setComposerInstagramReelEnabled] = useState(true);
+  const [composerFacebookReelEnabled, setComposerFacebookReelEnabled] = useState(true);
+  const [generatingReelBlogId, setGeneratingReelBlogId] = useState<string | null>(null);
+  const [regeneratingReelPostId, setRegeneratingReelPostId] = useState<string | null>(null);
   const [customizeSocialCaptions, setCustomizeSocialCaptions] = useState(false);
   const [customInstagramCaption, setCustomInstagramCaption] = useState('');
   const [customFacebookCaption, setCustomFacebookCaption] = useState('');
@@ -536,15 +562,26 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
     }
   };
 
-  const handlePopulateAllSocial = async (forceOverwrite: boolean = false) => {
+  const handlePopulateAllSocial = async (
+    forceOverwrite: boolean = false,
+    reelsOnly: boolean = false
+  ) => {
     setIsPopulatingSocial(true);
     setError(null);
     try {
-      const res = await api.blog.populateSocialFromBlogs(forceOverwrite);
+      const res = await api.blog.populateSocialFromBlogs(forceOverwrite, {
+        includeReels: true,
+        reelsOnly,
+      });
       if (res.status === 'success') {
         await fetchSocialPosts();
         await fetchSocialConfig();
-        showToast(res.message || 'Instagram & Facebook populated from Blog articles.');
+        showToast(
+          res.message ||
+            (reelsOnly
+              ? 'Instagram Reels & Facebook Reels populated from Blog articles.'
+              : 'Instagram & Facebook posts + Reels populated from Blog articles.')
+        );
       } else {
         setError(res.message || 'Failed to populate social channels.');
       }
@@ -552,6 +589,53 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
       setError(err?.message || 'Failed to populate social channels.');
     } finally {
       setIsPopulatingSocial(false);
+    }
+  };
+
+  const handleGenerateReelsForBlog = async (blogId: string, publishNow: boolean = false) => {
+    setGeneratingReelBlogId(blogId);
+    setError(null);
+    try {
+      const res = await api.blog.generateReels({
+        blogId,
+        platforms: ['instagram_reel', 'facebook_reel'],
+        forceRegenerate: true,
+        publishNow,
+      });
+      if (res.status === 'success') {
+        await fetchSocialPosts();
+        showToast(
+          res.message || '9:16 Short Video Reel generated for Instagram Reels & Facebook Reels!'
+        );
+        setActiveChannel('instagram_reel');
+      } else {
+        setError(res.message || 'Failed to generate Reel video.');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to generate Reel video.');
+    } finally {
+      setGeneratingReelBlogId(null);
+    }
+  };
+
+  const handleRegenerateSocialReel = async (post: SocialPost) => {
+    setRegeneratingReelPostId(post.id);
+    setError(null);
+    try {
+      const res = await api.blog.generateReels({
+        socialPostId: post.id,
+        forceRegenerate: true,
+      });
+      if (res.status === 'success') {
+        await fetchSocialPosts();
+        showToast(res.message || '9:16 Short Video Reel regenerated!');
+      } else {
+        setError(res.message || 'Failed to regenerate Reel video.');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Failed to regenerate Reel video.');
+    } finally {
+      setRegeneratingReelPostId(null);
     }
   };
 
@@ -630,8 +714,17 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
       featured_image: '',
       tags: [],
     });
-    setComposerInstagramEnabled(socialConfig.autoPopulateInstagram);
-    setComposerFacebookEnabled(socialConfig.autoPopulateFacebook);
+    const mode = socialConfig.socialPublishFormat || 'images_and_reels';
+    setComposerInstagramEnabled(socialConfig.autoPopulateInstagram && mode !== 'reels_only');
+    setComposerFacebookEnabled(socialConfig.autoPopulateFacebook && mode !== 'reels_only');
+    setComposerInstagramReelEnabled(
+      socialConfig.autoPopulateInstagramReels !== false &&
+        (mode === 'images_and_reels' || mode === 'reels_only')
+    );
+    setComposerFacebookReelEnabled(
+      socialConfig.autoPopulateFacebookReels !== false &&
+        (mode === 'images_and_reels' || mode === 'reels_only')
+    );
     setCustomizeSocialCaptions(false);
     setCustomInstagramCaption('');
     setCustomFacebookCaption('');
@@ -731,6 +824,8 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
     const socialOptions = {
       enableInstagram: composerInstagramEnabled,
       enableFacebook: composerFacebookEnabled,
+      enableInstagramReel: composerInstagramReelEnabled,
+      enableFacebookReel: composerFacebookReelEnabled,
       instagramCaption: customizeSocialCaptions ? customInstagramCaption : undefined,
       facebookCaption: customizeSocialCaptions ? customFacebookCaption : undefined,
       imageUrl: currentBlog.featured_image || '',
@@ -1170,8 +1265,18 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
     [socialPosts]
   );
 
+  const instagramReelPosts = useMemo(
+    () => socialPosts.filter((p) => p.platform === 'instagram_reel'),
+    [socialPosts]
+  );
+
   const facebookPosts = useMemo(
     () => socialPosts.filter((p) => p.platform === 'facebook'),
+    [socialPosts]
+  );
+
+  const facebookReelPosts = useMemo(
+    () => socialPosts.filter((p) => p.platform === 'facebook_reel'),
     [socialPosts]
   );
 
@@ -1193,7 +1298,14 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
 
   const filteredSocialPosts = useMemo(() => {
     if (activeChannel === 'blog') return [];
-    const base = activeChannel === 'instagram' ? instagramPosts : facebookPosts;
+    const base =
+      activeChannel === 'instagram'
+        ? instagramPosts
+        : activeChannel === 'instagram_reel'
+        ? instagramReelPosts
+        : activeChannel === 'facebook_reel'
+        ? facebookReelPosts
+        : facebookPosts;
     return base.filter((sp) => {
       const matchesStatus = statusFilter === 'all' || sp.status === statusFilter;
       const matchesCategory =
@@ -1206,15 +1318,28 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
         (Array.isArray(sp.hashtags) && sp.hashtags.some((h) => h.toLowerCase().includes(q)));
       return matchesStatus && matchesCategory && matchesSearch;
     });
-  }, [activeChannel, instagramPosts, facebookPosts, statusFilter, categoryFilter, searchQuery]);
+  }, [
+    activeChannel,
+    instagramPosts,
+    instagramReelPosts,
+    facebookPosts,
+    facebookReelPosts,
+    statusFilter,
+    categoryFilter,
+    searchQuery,
+  ]);
 
   const stats = useMemo(() => {
     const published = blogs.filter((b) => b.status === 'published').length;
     const drafts = blogs.filter((b) => b.status !== 'published').length;
     const igLive = instagramPosts.filter((p) => p.status === 'published').length;
     const igQueued = instagramPosts.filter((p) => p.status === 'queued').length;
+    const igReelLive = instagramReelPosts.filter((p) => p.status === 'published').length;
+    const igReelQueued = instagramReelPosts.filter((p) => p.status === 'queued').length;
     const fbLive = facebookPosts.filter((p) => p.status === 'published').length;
     const fbQueued = facebookPosts.filter((p) => p.status === 'queued').length;
+    const fbReelLive = facebookReelPosts.filter((p) => p.status === 'published').length;
+    const fbReelQueued = facebookReelPosts.filter((p) => p.status === 'queued').length;
     return {
       total: blogs.length,
       published,
@@ -1223,13 +1348,21 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
       igLive,
       igQueued,
       igDrafts: Math.max(0, instagramPosts.length - igLive - igQueued),
+      igReelTotal: instagramReelPosts.length,
+      igReelLive,
+      igReelQueued,
+      igReelDrafts: Math.max(0, instagramReelPosts.length - igReelLive - igReelQueued),
       fbTotal: facebookPosts.length,
       fbLive,
       fbQueued,
       fbDrafts: Math.max(0, facebookPosts.length - fbLive - fbQueued),
+      fbReelTotal: facebookReelPosts.length,
+      fbReelLive,
+      fbReelQueued,
+      fbReelDrafts: Math.max(0, facebookReelPosts.length - fbReelLive - fbReelQueued),
       categories: blogConfig.categories.length,
     };
-  }, [blogs, instagramPosts, facebookPosts, blogConfig.categories]);
+  }, [blogs, instagramPosts, instagramReelPosts, facebookPosts, facebookReelPosts, blogConfig.categories]);
 
   const activeCounts = useMemo(() => {
     if (activeChannel === 'instagram') {
@@ -1240,6 +1373,14 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
         drafts: stats.igDrafts,
       };
     }
+    if (activeChannel === 'instagram_reel') {
+      return {
+        total: stats.igReelTotal,
+        published: stats.igReelLive,
+        queued: stats.igReelQueued,
+        drafts: stats.igReelDrafts,
+      };
+    }
     if (activeChannel === 'facebook') {
       return {
         total: stats.fbTotal,
@@ -1248,14 +1389,22 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
         drafts: stats.fbDrafts,
       };
     }
+    if (activeChannel === 'facebook_reel') {
+      return {
+        total: stats.fbReelTotal,
+        published: stats.fbReelLive,
+        queued: stats.fbReelQueued,
+        drafts: stats.fbReelDrafts,
+      };
+    }
     return { total: stats.total, published: stats.published, queued: 0, drafts: stats.drafts };
   }, [activeChannel, stats]);
 
   const activeCooldownMinsLeft = useMemo(() => {
     const raw =
-      activeChannel === 'instagram'
+      activeChannel === 'instagram' || activeChannel === 'instagram_reel'
         ? socialConfig.instagramCooldownUntil
-        : activeChannel === 'facebook'
+        : activeChannel === 'facebook' || activeChannel === 'facebook_reel'
         ? socialConfig.facebookCooldownUntil
         : null;
     if (!raw) return 0;
@@ -1752,7 +1901,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
             <button
               type="button"
               onClick={() => setActiveChannel('instagram')}
-              className={`h-9 px-4 rounded-[9px] text-[13px] font-semibold inline-flex items-center gap-2 transition-all whitespace-nowrap ${
+              className={`h-9 px-3.5 rounded-[9px] text-[13px] font-semibold inline-flex items-center gap-2 transition-all whitespace-nowrap ${
                 activeChannel === 'instagram'
                   ? 'bg-gradient-to-r from-[#F58529] via-[#DD2A7B] to-[#8134AF] text-white badge-white shadow-sm'
                   : 'text-[var(--apple-text-secondary)] hover:text-[var(--apple-text-primary)]'
@@ -1773,8 +1922,34 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
 
             <button
               type="button"
+              onClick={() => setActiveChannel('instagram_reel')}
+              className={`h-9 px-3.5 rounded-[9px] text-[13px] font-semibold inline-flex items-center gap-2 transition-all whitespace-nowrap ${
+                activeChannel === 'instagram_reel'
+                  ? 'bg-gradient-to-r from-[#8134AF] via-[#DD2A7B] to-[#F58529] text-white badge-white shadow-sm'
+                  : 'text-[var(--apple-text-secondary)] hover:text-[var(--apple-text-primary)]'
+              }`}
+            >
+              <i
+                className={`fas fa-clapperboard text-xs ${
+                  activeChannel === 'instagram_reel' ? 'badge-white' : 'text-[#DD2A7B]'
+                }`}
+              ></i>
+              <span>IG Reels</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                  activeChannel === 'instagram_reel'
+                    ? 'bg-white/25 text-white badge-white'
+                    : 'bg-black/[0.06] dark:bg-white/[0.08] text-[var(--apple-text-tertiary)]'
+                }`}
+              >
+                {stats.igReelTotal}
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveChannel('facebook')}
-              className={`h-9 px-4 rounded-[9px] text-[13px] font-semibold inline-flex items-center gap-2 transition-all whitespace-nowrap ${
+              className={`h-9 px-3.5 rounded-[9px] text-[13px] font-semibold inline-flex items-center gap-2 transition-all whitespace-nowrap ${
                 activeChannel === 'facebook'
                   ? 'bg-[#1877F2] text-white badge-white shadow-sm'
                   : 'text-[var(--apple-text-secondary)] hover:text-[var(--apple-text-primary)]'
@@ -1790,6 +1965,32 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                 }`}
               >
                 {stats.fbTotal}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveChannel('facebook_reel')}
+              className={`h-9 px-3.5 rounded-[9px] text-[13px] font-semibold inline-flex items-center gap-2 transition-all whitespace-nowrap ${
+                activeChannel === 'facebook_reel'
+                  ? 'bg-gradient-to-r from-[#1877F2] to-[#4e45e1] text-white badge-white shadow-sm'
+                  : 'text-[var(--apple-text-secondary)] hover:text-[var(--apple-text-primary)]'
+              }`}
+            >
+              <i
+                className={`fas fa-clapperboard text-xs ${
+                  activeChannel === 'facebook_reel' ? 'badge-white' : 'text-[#1877F2]'
+                }`}
+              ></i>
+              <span>FB Reels</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                  activeChannel === 'facebook_reel'
+                    ? 'bg-white/25 text-white badge-white'
+                    : 'bg-black/[0.06] dark:bg-white/[0.08] text-[var(--apple-text-tertiary)]'
+                }`}
+              >
+                {stats.fbReelTotal}
               </span>
             </button>
           </div>
@@ -1813,16 +2014,27 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
             <button
               type="button"
               disabled={isPopulatingSocial}
-              onClick={() => handlePopulateAllSocial(false)}
+              onClick={() =>
+                handlePopulateAllSocial(
+                  false,
+                  activeChannel === 'instagram_reel' || activeChannel === 'facebook_reel'
+                )
+              }
               className="h-9 px-3.5 apple-secondary-btn rounded-[10px] text-[12px] font-semibold inline-flex items-center gap-2 disabled:opacity-50"
-              title="Populate Instagram & Facebook with all Blog articles"
+              title="Populate Instagram & Facebook Posts + Short Video Reels from all Blog articles"
             >
               <i
                 className={`fas ${
-                  isPopulatingSocial ? 'fa-spinner fa-spin' : 'fa-arrows-rotate'
+                  isPopulatingSocial ? 'fa-spinner fa-spin' : 'fa-film'
                 } text-[var(--apple-blue)] text-xs`}
               ></i>
-              <span>{isPopulatingSocial ? 'Syncing…' : 'Populate IG & FB from Blogs'}</span>
+              <span>
+                {isPopulatingSocial
+                  ? 'Generating…'
+                  : activeChannel === 'instagram_reel' || activeChannel === 'facebook_reel'
+                  ? 'Generate Reels from Blogs'
+                  : 'Populate IG & FB + Reels'}
+              </span>
             </button>
 
             {activeChannel !== 'blog' && (
@@ -1832,9 +2044,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                 className="h-9 px-3.5 apple-pill-btn rounded-[10px] text-[12px] font-semibold inline-flex items-center gap-1.5"
               >
                 <i className="fas fa-plus text-[11px] badge-white"></i>
-                <span>
-                  New {activeChannel === 'instagram' ? 'Instagram' : 'Facebook'} Post
-                </span>
+                <span>New {formatChannelName(activeChannel)}</span>
               </button>
             )}
           </div>
@@ -2136,7 +2346,18 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                         className="w-4 h-4 accent-[#DD2A7B]"
                       />
                       <InstagramIcon className="w-3.5 h-3.5 text-[#DD2A7B]" />
-                      <span>Instagram</span>
+                      <span>IG Post</span>
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-[12.5px] font-medium cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={composerInstagramReelEnabled}
+                        onChange={(e) => setComposerInstagramReelEnabled(e.target.checked)}
+                        className="w-4 h-4 accent-[#DD2A7B]"
+                      />
+                      <i className="fas fa-clapperboard text-xs text-[#DD2A7B]"></i>
+                      <span>IG Reel (9:16 Video)</span>
                     </label>
 
                     <label className="inline-flex items-center gap-2 text-[12.5px] font-medium cursor-pointer">
@@ -2147,7 +2368,18 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                         className="w-4 h-4 accent-[#1877F2]"
                       />
                       <FacebookIcon className="w-3.5 h-3.5 text-[#1877F2]" />
-                      <span>Facebook</span>
+                      <span>FB Post</span>
+                    </label>
+
+                    <label className="inline-flex items-center gap-2 text-[12.5px] font-medium cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={composerFacebookReelEnabled}
+                        onChange={(e) => setComposerFacebookReelEnabled(e.target.checked)}
+                        className="w-4 h-4 accent-[#1877F2]"
+                      />
+                      <i className="fas fa-clapperboard text-xs text-[#1877F2]"></i>
+                      <span>FB Reel (9:16 Video)</span>
                     </label>
 
                     <button
@@ -2444,6 +2676,9 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                   const hasFb = facebookPosts.some(
                     (sp) => String(sp.blogId) === String(blog.id)
                   );
+                  const hasReel =
+                    instagramReelPosts.some((sp) => String(sp.blogId) === String(blog.id)) ||
+                    facebookReelPosts.some((sp) => String(sp.blogId) === String(blog.id));
                   return (
                     <div
                       key={blog.id}
@@ -2470,6 +2705,15 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                                 className="w-6 h-6 rounded-full bg-[#1877F2] text-white inline-flex items-center justify-center"
                               >
                                 <FacebookIcon className="w-3 h-3" />
+                              </span>
+                            )}
+                            {hasReel && (
+                              <span
+                                title="9:16 Short Video Reel Generated"
+                                className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-gradient-to-r from-[#DD2A7B] to-[#4e45e1] text-white inline-flex items-center gap-1 badge-white"
+                              >
+                                <i className="fas fa-clapperboard text-[9px] badge-white"></i>
+                                <span>9:16 Reel</span>
                               </span>
                             )}
                           </div>
@@ -2524,7 +2768,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                       </div>
 
                       <div
-                        className="pt-4 border-t border-[var(--apple-border)] flex items-center justify-between gap-3"
+                        className="pt-4 border-t border-[var(--apple-border)] flex items-center justify-between gap-2 flex-wrap"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <div className="text-[12px] text-[var(--apple-text-tertiary)] truncate">
@@ -2534,32 +2778,57 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                           • {blog.date}
                         </div>
 
-                        <button
-                          onClick={() => handleSyncToSite(blog.id)}
-                          disabled={isSyncing === blog.id}
-                          className={`px-3.5 py-1.5 rounded-[9px] text-[12px] font-semibold flex items-center gap-1.5 transition-all ${
-                            blog.status === 'published'
-                              ? 'apple-secondary-btn text-[var(--apple-text-primary)]'
-                              : 'apple-pill-btn'
-                          }`}
-                        >
-                          <i
-                            className={`fas ${
-                              isSyncing === blog.id
-                                ? 'fa-spinner fa-spin'
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleGenerateReelsForBlog(blog.id, false)}
+                            disabled={generatingReelBlogId === blog.id}
+                            className="px-3 py-1.5 apple-secondary-btn rounded-[9px] text-[12px] font-semibold inline-flex items-center gap-1.5 disabled:opacity-50"
+                            title="Generate 9:16 Short Video Reel for Instagram & Facebook"
+                          >
+                            <i
+                              className={`fas ${
+                                generatingReelBlogId === blog.id
+                                  ? 'fa-spinner fa-spin'
+                                  : 'fa-clapperboard'
+                              } text-[#DD2A7B] text-[11px]`}
+                            ></i>
+                            <span>
+                              {generatingReelBlogId === blog.id
+                                ? 'Rendering MP4…'
+                                : hasReel
+                                ? 'View / Rebuild Reel'
+                                : 'Generate Reel'}
+                            </span>
+                          </button>
+
+                          <button
+                            onClick={() => handleSyncToSite(blog.id)}
+                            disabled={isSyncing === blog.id}
+                            className={`px-3.5 py-1.5 rounded-[9px] text-[12px] font-semibold flex items-center gap-1.5 transition-all ${
+                              blog.status === 'published'
+                                ? 'apple-secondary-btn text-[var(--apple-text-primary)]'
+                                : 'apple-pill-btn'
+                            }`}
+                          >
+                            <i
+                              className={`fas ${
+                                isSyncing === blog.id
+                                  ? 'fa-spinner fa-spin'
+                                  : blog.status === 'published'
+                                  ? 'fa-rotate'
+                                  : 'fa-cloud-arrow-up badge-white'
+                              } text-[11px]`}
+                            ></i>
+                            <span>
+                              {isSyncing === blog.id
+                                ? 'Syncing…'
                                 : blog.status === 'published'
-                                ? 'fa-rotate'
-                                : 'fa-cloud-arrow-up badge-white'
-                            } text-[11px]`}
-                          ></i>
-                          <span>
-                            {isSyncing === blog.id
-                              ? 'Syncing…'
-                              : blog.status === 'published'
-                              ? 'Sync Web + IG + FB'
-                              : 'Publish All Channels'}
-                          </span>
-                        </button>
+                                ? 'Sync All Channels'
+                                : 'Publish All Channels'}
+                            </span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -2628,7 +2897,13 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
               {filteredSocialPosts.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                   {filteredSocialPosts.map((post) => {
-                    const isIg = post.platform === 'instagram';
+                    const isIg =
+                      post.platform === 'instagram' || post.platform === 'instagram_reel';
+                    const isReel =
+                      post.platform === 'instagram_reel' ||
+                      post.platform === 'facebook_reel' ||
+                      post.mediaType === 'reel';
+                    const channelLabel = formatChannelName(post.platform);
                     return (
                       <div
                         key={post.id}
@@ -2645,7 +2920,9 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                                     : 'bg-[#1877F2]'
                                 }`}
                               >
-                                {isIg ? (
+                                {isReel ? (
+                                  <i className="fas fa-clapperboard text-xs badge-white"></i>
+                                ) : isIg ? (
                                   <InstagramIcon className="w-4 h-4" />
                                 ) : (
                                   <FacebookIcon className="w-4 h-4" />
@@ -2659,7 +2936,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                                       : socialConfig.facebookPageName)}
                                 </p>
                                 <div className="flex items-center gap-1.5 text-[11px] text-[var(--apple-text-tertiary)]">
-                                  <span>{isIg ? 'Instagram Feed' : 'Facebook Page'}</span>
+                                  <span>{channelLabel}</span>
                                   {post.blogId && (
                                     <>
                                       <span>•</span>
@@ -2705,8 +2982,58 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                             </div>
                           </div>
 
-                          {/* Visual Media / Link Card */}
-                          {post.imageUrl ? (
+                          {/* Visual Media / 9:16 Short Video Player or Image Card */}
+                          {isReel && post.videoUrl ? (
+                            <div className="rounded-[16px] overflow-hidden border border-[var(--apple-border)] bg-[#080914] p-3 flex flex-col items-center gap-2.5">
+                              <div className="w-full flex items-center justify-between text-[11px] text-white/80 px-1">
+                                <span className="inline-flex items-center gap-1.5 font-semibold">
+                                  <i className="fas fa-film text-[#38BDF8]"></i>
+                                  <span>9:16 Vertical Reel • {post.durationSec || 14}s • Tech Beat</span>
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={regeneratingReelPostId === post.id}
+                                    onClick={() => handleRegenerateSocialReel(post)}
+                                    className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 text-white text-[10.5px] font-semibold inline-flex items-center gap-1"
+                                    title="Re-render 9:16 MP4 Video from Blog"
+                                  >
+                                    <i
+                                      className={`fas ${
+                                        regeneratingReelPostId === post.id
+                                          ? 'fa-spinner fa-spin'
+                                          : 'fa-arrows-rotate'
+                                      } text-[9px]`}
+                                    ></i>
+                                    <span>
+                                      {regeneratingReelPostId === post.id ? 'Rendering…' : 'Rebuild MP4'}
+                                    </span>
+                                  </button>
+                                  <a
+                                    href={`${resolveMediaUrl(post.videoUrl)}${
+                                      post.videoUrl.includes('?') ? '&' : '?'
+                                    }download=1`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="px-2 py-0.5 rounded-md bg-white/10 hover:bg-white/20 text-white text-[10.5px] font-semibold inline-flex items-center gap-1"
+                                    title="Download MP4 file"
+                                  >
+                                    <i className="fas fa-download text-[9px]"></i>
+                                    <span>MP4</span>
+                                  </a>
+                                </div>
+                              </div>
+                              <video
+                                key={post.videoUrl}
+                                src={resolveMediaUrl(post.videoUrl)}
+                                poster={post.posterUrl ? resolveMediaUrl(post.posterUrl) : undefined}
+                                controls
+                                playsInline
+                                preload="metadata"
+                                className="w-full max-w-[240px] aspect-[9/16] rounded-[12px] bg-black shadow-lg object-cover"
+                              />
+                            </div>
+                          ) : post.imageUrl ? (
                             <div className="rounded-[14px] overflow-hidden border border-[var(--apple-border)] bg-black/5 aspect-[16/9] relative">
                               <img
                                 src={post.imageUrl}
@@ -2777,9 +3104,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                               className="inline-flex items-center gap-1.5 text-[11.5px] font-semibold text-[#248A3D] dark:text-[#30D158] hover:underline"
                             >
                               <i className="fas fa-arrow-up-right-from-square text-[10px]"></i>
-                              <span>
-                                View Live Post on {isIg ? 'Instagram' : 'Facebook'}
-                              </span>
+                              <span>View Live on {channelLabel}</span>
                             </a>
                           )}
                         </div>
@@ -2788,12 +3113,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                         <div className="pt-3.5 border-t border-[var(--apple-border)] flex items-center justify-between gap-2 flex-wrap">
                           <button
                             type="button"
-                            onClick={() =>
-                              handleCopyText(
-                                post.caption,
-                                `${isIg ? 'Instagram' : 'Facebook'} caption`
-                              )
-                            }
+                            onClick={() => handleCopyText(post.caption, `${channelLabel} caption`)}
                             className="px-3 py-1.5 apple-secondary-btn rounded-[9px] text-[12px] font-medium inline-flex items-center gap-1.5"
                           >
                             <i className="fas fa-copy text-[11px]"></i>
@@ -2826,7 +3146,7 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                                 ? 'Re-Dispatch'
                                 : post.status === 'queued'
                                 ? 'Queued (Publish Now)'
-                                : `Publish to ${isIg ? 'Instagram' : 'Facebook'}`}
+                                : `Publish to ${channelLabel}`}
                             </span>
                           </button>
                         </div>
@@ -2851,26 +3171,37 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                       )}
                     </div>
                     <h3 className="text-[16px] font-semibold text-[var(--apple-text-primary)]">
-                      No {activeChannel === 'instagram' ? 'Instagram' : 'Facebook'} posts yet
+                      No {formatChannelName(activeChannel)} items yet
                     </h3>
                     <p className="text-[13px] text-[var(--apple-text-secondary)]">
                       {blogs.length > 0
                         ? `You have ${blogs.length} blog article${
                             blogs.length === 1 ? '' : 's'
-                          } ready to auto-populate into Instagram & Facebook with one click.`
-                        : 'Write a new article in Editorial Studio or run daily.dev automation — Instagram & Facebook will automatically populate with the same content.'}
+                          } ready to convert into ${formatChannelName(activeChannel)} with one click.`
+                        : 'Write a new article in Editorial Studio or run daily.dev automation — Posts and 9:16 Reels will automatically populate from the same blog source.'}
                     </p>
                     <div className="flex items-center justify-center gap-2.5 pt-2 flex-wrap">
                       {blogs.length > 0 && (
                         <button
-                          onClick={() => handlePopulateAllSocial(false)}
+                          onClick={() =>
+                            handlePopulateAllSocial(
+                              false,
+                              activeChannel === 'instagram_reel' ||
+                                activeChannel === 'facebook_reel'
+                            )
+                          }
                           disabled={isPopulatingSocial}
                           className="px-4 py-2.5 apple-pill-btn rounded-[12px] text-[13px] font-semibold inline-flex items-center gap-2"
                         >
-                          <i className="fas fa-bolt text-xs badge-white"></i>
+                          <i className="fas fa-film text-xs badge-white"></i>
                           <span>
                             {isPopulatingSocial
-                              ? 'Populating…'
+                              ? 'Generating MP4 Reels…'
+                              : activeChannel === 'instagram_reel' ||
+                                activeChannel === 'facebook_reel'
+                              ? `Generate Reels from ${blogs.length} Blog${
+                                  blogs.length === 1 ? '' : 's'
+                                }`
                               : `Populate from ${blogs.length} Blog${blogs.length === 1 ? '' : 's'}`}
                           </span>
                         </button>
@@ -2975,9 +3306,18 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                   <label className="text-[12px] font-medium text-[var(--apple-text-secondary)]">
                     Target Channels
                   </label>
-                  <div className="flex items-center gap-3">
-                    {(['instagram', 'facebook'] as SocialPlatform[]).map((plt) => {
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {(
+                      [
+                        'instagram',
+                        'instagram_reel',
+                        'facebook',
+                        'facebook_reel',
+                      ] as SocialPlatform[]
+                    ).map((plt) => {
                       const checked = socialDraft.platforms.includes(plt);
+                      const isIgPlt = plt === 'instagram' || plt === 'instagram_reel';
+                      const isReelPlt = plt === 'instagram_reel' || plt === 'facebook_reel';
                       return (
                         <button
                           key={plt}
@@ -2990,18 +3330,24 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                               return { ...prev, platforms: next.length ? next : [plt] };
                             });
                           }}
-                          className={`px-3.5 py-2 rounded-[10px] text-[12.5px] font-semibold inline-flex items-center gap-2 border transition ${
+                          className={`px-3 py-2 rounded-[10px] text-[12px] font-semibold inline-flex items-center gap-1.5 border transition ${
                             checked
                               ? 'bg-[#4e45e1]/12 border-[#4e45e1]/40 text-[var(--apple-blue)]'
                               : 'apple-subcard border-transparent text-[var(--apple-text-secondary)]'
                           }`}
                         >
-                          {plt === 'instagram' ? (
+                          {isReelPlt ? (
+                            <i
+                              className={`fas fa-clapperboard text-xs ${
+                                isIgPlt ? 'text-[#DD2A7B]' : 'text-[#1877F2]'
+                              }`}
+                            ></i>
+                          ) : isIgPlt ? (
                             <InstagramIcon className="w-3.5 h-3.5 text-[#DD2A7B]" />
                           ) : (
                             <FacebookIcon className="w-3.5 h-3.5 text-[#1877F2]" />
                           )}
-                          <span>{plt === 'instagram' ? 'Instagram' : 'Facebook'}</span>
+                          <span>{formatChannelName(plt)}</span>
                         </button>
                       );
                     })}
@@ -3414,6 +3760,77 @@ const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
                       {isDiscoveringToken ? 'Connecting…' : 'Auto-Discover FB & IG'}
                     </span>
                   </button>
+                </div>
+              </div>
+
+              {/* Blog -> Short Video (Reels) & Image Publishing Format (Admin Control) */}
+              <div className="apple-subcard p-4 rounded-[14px] space-y-3 border border-[#4e45e1]/20">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[13px] font-semibold text-[var(--apple-text-primary)]">
+                      Blog → Social Publishing Format (Images &amp; 9:16 Short Videos)
+                    </p>
+                    <p className="text-[11px] text-[var(--apple-text-secondary)]">
+                      Auto-renders 9:16 MP4 Reels (animated captions + ambient tech beat) from the same blog source
+                    </p>
+                  </div>
+                  <select
+                    value={socialConfig.socialPublishFormat || 'images_and_reels'}
+                    onChange={(e) =>
+                      setSocialConfig({
+                        ...socialConfig,
+                        socialPublishFormat: e.target.value as SocialConfig['socialPublishFormat'],
+                      })
+                    }
+                    className="apple-input px-3 py-2 text-[12px] font-semibold shrink-0"
+                  >
+                    <option value="images_and_reels">Reels + Image Posts (Paced in Drip Queue)</option>
+                    <option value="reels_only">Short Videos (Reels) Only</option>
+                    <option value="images_only">Image Posts Only</option>
+                    <option value="manual_reels">Auto Images + Manual Reels per Blog</option>
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <label className="apple-card p-3 rounded-[10px] flex items-center justify-between cursor-pointer">
+                    <div className="flex items-center gap-2">
+                      <i className="fas fa-clapperboard text-xs text-[#DD2A7B]"></i>
+                      <span className="text-[12px] font-semibold text-[var(--apple-text-primary)]">
+                        Auto-Populate Instagram Reels
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={socialConfig.autoPopulateInstagramReels !== false}
+                      onChange={(e) =>
+                        setSocialConfig({
+                          ...socialConfig,
+                          autoPopulateInstagramReels: e.target.checked,
+                        })
+                      }
+                      className="w-4 h-4 accent-[#DD2A7B]"
+                    />
+                  </label>
+
+                  <label className="apple-card p-3 rounded-[10px] flex items-center justify-between cursor-pointer">
+                    <div className="flex items-center gap-2">
+                      <i className="fas fa-clapperboard text-xs text-[#1877F2]"></i>
+                      <span className="text-[12px] font-semibold text-[var(--apple-text-primary)]">
+                        Auto-Populate Facebook Reels
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={socialConfig.autoPopulateFacebookReels !== false}
+                      onChange={(e) =>
+                        setSocialConfig({
+                          ...socialConfig,
+                          autoPopulateFacebookReels: e.target.checked,
+                        })
+                      }
+                      className="w-4 h-4 accent-[#1877F2]"
+                    />
+                  </label>
                 </div>
               </div>
 

@@ -828,13 +828,27 @@ export const api = {
         saveAutomationConfig: (data: any) => api.fetch('/blog/automation/config', { method: 'POST', body: JSON.stringify(data) }),
         runAutomationNow: (options?: { maxPerRun?: number; autoPublish?: boolean; categoryOverride?: string; autoPopulateSocial?: boolean }) =>
             api.fetch('/blog/automation/run', { method: 'POST', body: JSON.stringify(options || {}) }),
-        listSocial: (platform?: 'instagram' | 'facebook') =>
+        listSocial: (platform?: 'instagram' | 'facebook' | 'instagram_reel' | 'facebook_reel') =>
             api.fetch(platform ? `/blog/social/list?platform=${platform}` : '/blog/social/list'),
         saveSocial: (data: any) => api.fetch('/blog/social/save', { method: 'POST', body: JSON.stringify(data) }),
         publishSocial: (id: string) => api.fetch('/blog/social/publish', { method: 'POST', body: JSON.stringify({ id }) }),
         deleteSocial: (id: string) => api.fetch('/blog/social/delete', { method: 'POST', body: JSON.stringify({ id }) }),
-        populateSocialFromBlogs: (forceOverwrite: boolean = false) =>
-            api.fetch('/blog/social/populate-all', { method: 'POST', body: JSON.stringify({ forceOverwrite }) }),
+        populateSocialFromBlogs: (
+            forceOverwrite: boolean = false,
+            options?: { includeReels?: boolean; reelsOnly?: boolean }
+        ) =>
+            api.fetch('/blog/social/populate-all', {
+                method: 'POST',
+                body: JSON.stringify({ forceOverwrite, ...(options || {}) })
+            }),
+        generateReels: (data: {
+            blogId?: string | number;
+            socialPostId?: string | number;
+            platforms?: Array<'instagram_reel' | 'facebook_reel'>;
+            forceRegenerate?: boolean;
+            publishNow?: boolean;
+        }) =>
+            api.fetch('/blog/reels/generate', { method: 'POST', body: JSON.stringify(data) }),
         getSocialConfig: () => api.fetch('/blog/social/config'),
         saveSocialConfig: (data: any) => api.fetch('/blog/social/config', { method: 'POST', body: JSON.stringify(data) }),
         getMetaOAuthUrl: (data: {

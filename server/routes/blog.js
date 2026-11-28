@@ -4,6 +4,8 @@
  * publishing, and daily.dev omnichannel content automation.
  */
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import express from "express";
 import db from "../db.js";
 import {
@@ -14,6 +16,11 @@ import {
   normalizeRole,
   createNotification,
 } from "../utils.js";
+import {
+  generateBlogReelVideo,
+  extractReelInsights,
+  REELS_DIR,
+} from "../reelGenerator.js";
 
 const router = express.Router();
 
@@ -40,6 +47,7 @@ const socialDiscoverPaths = ["/social/discover", "/social/discover.php"];
 const socialSelectPagePaths = ["/social/select-page", "/social/select-page.php"];
 const socialVerifyPaths = ["/social/verify", "/social/verify.php"];
 const socialDisconnectPaths = ["/social/disconnect", "/social/disconnect.php"];
+const reelsGeneratePaths = ["/reels/generate", "/reels/generate.php"];
 const deduplicatePaths = ["/deduplicate", "/deduplicate.php"];
 
 const WORKER_ID = `pid-${process.pid}-${crypto.randomBytes(3).toString("hex")}`;
@@ -101,6 +109,9 @@ const DEFAULT_AUTOMATION_CONFIG = {
 const DEFAULT_SOCIAL_CONFIG = {
   autoPopulateInstagram: true,
   autoPopulateFacebook: true,
+  autoPopulateInstagramReels: true,
+  autoPopulateFacebookReels: true,
+  socialPublishFormat: "images_and_reels",
   autoSyncOnBlogUpdate: true,
   autoPopulateDailyDev: true,
   autoPublishOnBlogPublish: true,
@@ -140,6 +151,78 @@ function isMetaRateLimitError(msg = "", code = null) {
   return /too many actions|rate limit|going too fast|limit reached|temporarily blocked|misusing this feature|spam/i.test(
     String(msg || "")
   );
+}
+
+const VALID_SOCIAL_PLATFORMS = new Set([
+  "instagram",
+  "facebook",
+  "instagram_reel",
+  "facebook_reel",
+]);
+
+function isInstagramFamily(plt = "") {
+  return plt === "instagram" || plt === "instagram_reel";
+}
+
+function isFacebookFamily(plt = "") {
+  return plt === "facebook" || plt === "facebook_reel";
+}
+
+function isReelPlatform(plt = "") {
+  return plt === "instagram_reel" || plt === "facebook_reel";
+}
+
+function formatPlatformLabel(plt = "") {
+  if (plt === "instagram_reel") return "Instagram Reels";
+  if (plt === "facebook_reel") return "Facebook Reels";
+  if (plt === "instagram") return "Instagram";
+  return "Facebook";
+}
+
+function getReelSafeKeyFromBlog(blog = {}) {
+  return String(blog.id || blog.slug || `custom-${Date.now()}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9-_]/g, "-")
+    .slice(0, 80);
+}
+
+async function ensureReelBufferForSocialPost(socialPost = {}) {
+  // Check existing file in REELS_DIR first
+  if (socialPost.videoUrl && socialPost.videoUrl.includes("/api/public/reels/")) {
+    const fname = path.basename(socialPost.videoUrl.split("?")[0]);
+    const candidate = path.join(REELS_DIR, fname);
+    if (fs.existsSync(candidate) && fs.statSync(candidate).size > 10000) {
+      return { mp4Path: candidate, mp4Filename: fname, buffer: fs.readFileSync(candidate) };
+    }
+  }
+
+  let blogSource = null;
+  if (socialPost.blogId) {
+    const bRes = await db
+      .query("SELECT * FROM blog_posts WHERE id = $1 LIMIT 1", [socialPost.blogId])
+      .catch(() => ({ rows: [] }));
+    blogSource = bRes.rows?.[0] || null;
+  }
+
+  const rendered = await generateBlogReelVideo(
+    blogSource || {
+      id: socialPost.blogId || socialPost.id || `reel-${Date.now()}`,
+      slug: socialPost.blogSlug || "",
+      title: socialPost.title || "Engineering Insight",
+      excerpt: socialPost.excerpt || socialPost.caption || "",
+      content: socialPost.caption || "",
+      category: socialPost.category || "Engineering",
+      tags: socialPost.hashtags || [],
+      featured_image: socialPost.imageUrl || "",
+    },
+    { handle: socialPost.accountHandle?.startsWith("@") ? socialPost.accountHandle : "@devinquire" }
+  );
+
+  return {
+    mp4Path: rendered.mp4Path,
+    mp4Filename: rendered.mp4Filename,
+    buffer: fs.readFileSync(rendered.mp4Path),
+  };
 }
 
 function slugifyText(text) {
@@ -558,7 +641,28 @@ function buildSocialPayloadFromBlog(blog, platform, socialCfg, blogCfg, override
   ).trim();
 
   let generatedCaption = "";
-  if (platform === "instagram") {
+  const isReel = isReelPlatform(platform);
+
+  if (isReel) {
+    const insights = extractReelInsights(blog);
+    const reelHashtags = Array.from(
+      new Set([
+        ...hashtags,
+        isInstagramFamily(platform) ? "InstagramReels" : "FacebookReels",
+        "TechShorts",
+      ])
+    ).slice(0, 12);
+    const reelTagLine = reelHashtags.map((h) => `#${h}`).join(" ");
+    generatedCaption = [
+      `🎬 ${blog.title}`,
+      `\n⚡ ${insights.insight1}`,
+      `\n💡 ${insights.insight2}`,
+      `\n🔗 ${cta} ${articleUrl}`,
+      reelTagLine ? `\n${reelTagLine}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  } else if (platform === "instagram") {
     const bodySnippet =
       plainBody && plainBody !== excerpt
         ? plainBody.slice(0, 520) + (plainBody.length > 520 ? "…" : "")
@@ -598,8 +702,13 @@ function buildSocialPayloadFromBlog(blog, platform, socialCfg, blogCfg, override
       ? overrides.imageUrl
       : blog.featured_image || "";
 
+  const reelKey = getReelSafeKeyFromBlog(blog);
+  const defaultVideoUrl = isReel ? `/api/public/reels/blog-${reelKey}.mp4` : undefined;
+  const defaultPosterUrl = isReel ? `/api/public/reels/blog-${reelKey}.jpg` : undefined;
+
   return {
     platform,
+    mediaType: isReel ? "reel" : "image",
     blogId: blog.id ? String(blog.id) : null,
     blogSlug: slug,
     title: String(blog.title || "").trim(),
@@ -607,14 +716,16 @@ function buildSocialPayloadFromBlog(blog, platform, socialCfg, blogCfg, override
     caption: finalCaption,
     hashtags,
     imageUrl: imageUrl || "",
+    videoUrl: overrides.videoUrl || defaultVideoUrl,
+    posterUrl: overrides.posterUrl || defaultPosterUrl,
+    durationSec: isReel ? 14 : undefined,
     articleUrl,
     category: blog.category || "Engineering",
     authorName:
       blog.author_name || blogCfg?.defaultAuthor || "DevInquire Editorial",
-    accountHandle:
-      platform === "instagram"
-        ? socialCfg.instagramHandle || "@devinquire"
-        : socialCfg.facebookPageName || "DevInquire",
+    accountHandle: isInstagramFamily(platform)
+      ? socialCfg.instagramHandle || "@devinquire"
+      : socialCfg.facebookPageName || "DevInquire",
     customEdited: Boolean(overrides.customEdited),
   };
 }
@@ -679,15 +790,17 @@ async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
   const hasWebhook = Boolean(socialCfg.webhookUrl && String(socialCfg.webhookUrl).trim());
   const hasFbCreds = Boolean(socialCfg.facebookPageId && socialCfg.facebookAccessToken);
   const hasIgCreds = Boolean(socialCfg.instagramAccountId && socialCfg.instagramAccessToken);
+  const isIgPlatform = isInstagramFamily(socialPost.platform);
+  const isReel = isReelPlatform(socialPost.platform);
 
-  if (socialPost.platform === "facebook" && !hasFbCreds && !hasWebhook) {
+  if (!isIgPlatform && !hasFbCreds && !hasWebhook) {
     results.notConfigured = true;
     results.error =
       "Facebook Page is not connected yet. Click 'Connect IG & FB' to connect your Facebook Page.";
     return results;
   }
 
-  if (socialPost.platform === "instagram" && !hasIgCreds && !hasWebhook) {
+  if (isIgPlatform && !hasIgCreds && !hasWebhook) {
     results.notConfigured = true;
     results.error = hasFbCreds
       ? "Facebook Page is connected, but no Instagram Business account is linked to this Page. In Facebook Page → Settings → Linked Accounts, link your Instagram Professional account, then reconnect."
@@ -696,7 +809,6 @@ async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
   }
 
   // Anti-Spam Cooldown & Burst Rate-Limit Pacing Guard for Meta Graph API
-  const isIgPlatform = socialPost.platform === "instagram";
   const cooldownField = isIgPlatform ? "instagramCooldownUntil" : "facebookCooldownUntil";
   const lastPubField = isIgPlatform ? "lastInstagramPublishedAt" : "lastFacebookPublishedAt";
   const usingMetaApi = (isIgPlatform && hasIgCreds) || (!isIgPlatform && hasFbCreds);
@@ -728,9 +840,264 @@ async function dispatchToExternalSocial(socialPost, socialCfg, options = {}) {
     }
   }
 
-  // 1. Direct Meta Graph API Publishing
+  // 1. Direct Meta Graph API Publishing (Supports both Image Posts & 9:16 Short Videos / Reels)
   try {
-    if (socialPost.platform === "facebook" && hasFbCreds) {
+    if (socialPost.platform === "facebook_reel" && hasFbCreds) {
+      const pageId = encodeURIComponent(socialCfg.facebookPageId);
+      const reelAsset = await ensureReelBufferForSocialPost(socialPost);
+      let fbReelId = null;
+      let fbReelErr = null;
+
+      // Primary: Official Facebook Page Reels 3-Phase Resumable Binary Upload API
+      try {
+        const startRes = await fetch(
+          `https://graph.facebook.com/v21.0/${pageId}/video_reels`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              upload_phase: "start",
+              access_token: socialCfg.facebookAccessToken,
+            }),
+            signal: AbortSignal.timeout(15000),
+          }
+        );
+        const startJson = await startRes.json().catch(() => ({}));
+        if (startRes.ok && startJson.video_id && startJson.upload_url) {
+          const uploadRes = await fetch(startJson.upload_url, {
+            method: "POST",
+            headers: {
+              Authorization: `OAuth ${socialCfg.facebookAccessToken}`,
+              offset: "0",
+              file_size: String(reelAsset.buffer.length),
+              "Content-Type": "application/octet-stream",
+            },
+            body: reelAsset.buffer,
+            signal: AbortSignal.timeout(45000),
+          });
+          const uploadJson = await uploadRes.json().catch(() => ({}));
+          if (uploadRes.ok && uploadJson.success !== false) {
+            const finishRes = await fetch(
+              `https://graph.facebook.com/v21.0/${pageId}/video_reels`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  video_id: startJson.video_id,
+                  upload_phase: "finish",
+                  video_state: "PUBLISHED",
+                  description: socialPost.caption,
+                  access_token: socialCfg.facebookAccessToken,
+                }),
+                signal: AbortSignal.timeout(25000),
+              }
+            );
+            const finishJson = await finishRes.json().catch(() => ({}));
+            if (finishRes.ok && (finishJson.success || finishJson.post_id)) {
+              fbReelId = finishJson.post_id || startJson.video_id;
+            } else {
+              fbReelErr = finishJson?.error?.message;
+            }
+          } else {
+            fbReelErr = uploadJson?.error?.message || uploadJson?.debug_info?.message;
+          }
+        } else {
+          fbReelErr = startJson?.error?.message;
+        }
+      } catch (e) {
+        fbReelErr = e.message;
+      }
+
+      // Fallback: Upload 9:16 vertical MP4 via /{pageId}/videos multipart API (auto-classified as Reel by Facebook)
+      if (!fbReelId) {
+        const form = new FormData();
+        form.append("access_token", socialCfg.facebookAccessToken);
+        form.append("description", socialPost.caption);
+        form.append(
+          "source",
+          new Blob([reelAsset.buffer], { type: "video/mp4" }),
+          reelAsset.mp4Filename
+        );
+        const vidRes = await fetch(
+          `https://graph-video.facebook.com/v21.0/${pageId}/videos`,
+          {
+            method: "POST",
+            body: form,
+            signal: AbortSignal.timeout(45000),
+          }
+        );
+        const vidJson = await vidRes.json().catch(() => ({}));
+        if (vidRes.ok && vidJson.id) {
+          fbReelId = vidJson.id;
+        } else {
+          fbReelErr =
+            vidJson?.error?.message ||
+            fbReelErr ||
+            `Facebook Reels API HTTP ${vidRes.status}`;
+        }
+      }
+
+      if (fbReelId) {
+        results.dispatched = true;
+        results.deliveryChannel = "meta_graph_api";
+        results.externalPostId = fbReelId;
+        results.externalUrl = `https://www.facebook.com/reel/${fbReelId}`;
+        results.error = null;
+      } else {
+        results.error = fbReelErr || "Facebook Reels Graph API rejected the video.";
+      }
+    } else if (socialPost.platform === "instagram_reel" && hasIgCreds) {
+      const reelAsset = await ensureReelBufferForSocialPost(socialPost);
+      const igBase = `https://graph.facebook.com/v21.0/${encodeURIComponent(
+        socialCfg.instagramAccountId
+      )}`;
+      const publicBase = String(
+        process.env.DASHBOARD_PUBLIC_URL || "https://dashboard.devinquire.com"
+      ).replace(/\/$/, "");
+      const publicVideoUrl =
+        socialPost.videoUrl && /^https:\/\//i.test(socialPost.videoUrl)
+          ? socialPost.videoUrl
+          : `${publicBase}/api/public/reels/${reelAsset.mp4Filename}`;
+
+      let creationId = null;
+      let igInitErr = null;
+
+      // Primary: Instagram Reels Resumable Direct Binary Upload (works from both localhost & production!)
+      try {
+        const resumableInit = await fetch(`${igBase}/media`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            media_type: "REELS",
+            upload_type: "resumable",
+            caption: socialPost.caption,
+            share_to_feed: true,
+            access_token: socialCfg.instagramAccessToken,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        const resumableJson = await resumableInit.json().catch(() => ({}));
+        if (resumableInit.ok && resumableJson.id && resumableJson.uri) {
+          const upRes = await fetch(resumableJson.uri, {
+            method: "POST",
+            headers: {
+              Authorization: `OAuth ${socialCfg.instagramAccessToken}`,
+              offset: "0",
+              file_size: String(reelAsset.buffer.length),
+              "Content-Type": "application/octet-stream",
+            },
+            body: reelAsset.buffer,
+            signal: AbortSignal.timeout(45000),
+          });
+          const upJson = await upRes.json().catch(() => ({}));
+          if (upRes.ok && upJson.success !== false) {
+            creationId = resumableJson.id;
+          } else {
+            igInitErr = upJson?.error?.message || upJson?.debug_info?.message;
+          }
+        } else {
+          igInitErr = resumableJson?.error?.message;
+        }
+      } catch (e) {
+        igInitErr = e.message;
+      }
+
+      // Fallback: Hosted HTTPS video_url container creation
+      if (!creationId) {
+        const urlContainerRes = await fetch(`${igBase}/media`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            media_type: "REELS",
+            video_url: publicVideoUrl,
+            caption: socialPost.caption,
+            share_to_feed: true,
+            access_token: socialCfg.instagramAccessToken,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        const urlContainerJson = await urlContainerRes.json().catch(() => ({}));
+        if (urlContainerRes.ok && urlContainerJson.id) {
+          creationId = urlContainerJson.id;
+        } else {
+          igInitErr =
+            urlContainerJson?.error?.message ||
+            igInitErr ||
+            `Instagram Reels Media API HTTP ${urlContainerRes.status}`;
+        }
+      }
+
+      if (creationId) {
+        let containerFailed = null;
+        // Poll Instagram video processing status (Reels transcode takes ~10-40s)
+        for (let attempt = 0; attempt < 16; attempt++) {
+          await sleep(3000);
+          try {
+            const stRes = await fetch(
+              `https://graph.facebook.com/v21.0/${encodeURIComponent(
+                creationId
+              )}?fields=status_code,status&access_token=${encodeURIComponent(
+                socialCfg.instagramAccessToken
+              )}`,
+              { signal: AbortSignal.timeout(8000) }
+            );
+            const stJson = await stRes.json().catch(() => ({}));
+            const code = String(stJson.status_code || "").toUpperCase();
+            if (!code || code === "FINISHED") {
+              break;
+            }
+            if (code === "ERROR" || code === "EXPIRED") {
+              containerFailed =
+                stJson.status || `Instagram Reel processing failed (${code}).`;
+              break;
+            }
+          } catch {
+            // keep polling
+          }
+        }
+
+        if (containerFailed) {
+          results.error = containerFailed;
+        } else {
+          const pubRes = await fetch(`${igBase}/media_publish`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              creation_id: creationId,
+              access_token: socialCfg.instagramAccessToken,
+            }),
+            signal: AbortSignal.timeout(15000),
+          });
+          const pubJson = await pubRes.json().catch(() => ({}));
+          if (pubRes.ok && pubJson.id) {
+            results.dispatched = true;
+            results.deliveryChannel = "meta_graph_api";
+            results.externalPostId = pubJson.id;
+            results.error = null;
+            try {
+              const permRes = await fetch(
+                `https://graph.facebook.com/v21.0/${encodeURIComponent(
+                  pubJson.id
+                )}?fields=permalink&access_token=${encodeURIComponent(
+                  socialCfg.instagramAccessToken
+                )}`,
+                { signal: AbortSignal.timeout(6000) }
+              );
+              const permJson = await permRes.json().catch(() => ({}));
+              if (permJson.permalink) results.externalUrl = permJson.permalink;
+            } catch {
+              // permalink optional
+            }
+          } else {
+            results.error =
+              pubJson?.error?.message ||
+              `Instagram Reels Publish HTTP ${pubRes.status}`;
+          }
+        }
+      } else {
+        results.error = igInitErr || "Failed to initialize Instagram Reel container.";
+      }
+    } else if (socialPost.platform === "facebook" && hasFbCreds) {
       const pageId = encodeURIComponent(socialCfg.facebookPageId);
       let fbSuccessId = null;
       let fbErr = null;
@@ -1026,6 +1393,22 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
       Boolean(existingParsed?.customEdited && !options.forceOverwrite),
   });
 
+  // Pre-render the 9:16 MP4 Reel + JPG poster when creating/updating a Reel (unless bulk lazy backfill)
+  if (isReelPlatform(platform) && !options.lazyVideo) {
+    try {
+      const rendered = await generateBlogReelVideo(blog, {
+        handle: socialCfg.instagramHandle || "@devinquire",
+        imageUrl: built.imageUrl,
+        forceRegenerate: Boolean(options.forceRegenerateVideo),
+      });
+      built.videoUrl = `/api/public/reels/${rendered.mp4Filename}`;
+      built.posterUrl = `/api/public/reels/${rendered.posterFilename}`;
+      built.durationSec = rendered.durationSec;
+    } catch (reelErr) {
+      console.warn("[REEL-GEN] Pre-render warning:", reelErr.message);
+    }
+  }
+
   const shouldAttemptExternalPublish =
     !options.skipExternalPublish &&
     !options.queueOnly &&
@@ -1139,42 +1522,83 @@ async function upsertSocialPostForBlog(blog, platform, options = {}) {
 
 async function syncBlogToSocialChannels(blog, socialOptions = {}) {
   const socialCfg = await loadSocialConfig();
+  const mode = String(socialCfg.socialPublishFormat || "images_and_reels").toLowerCase();
+
+  const formatAllowsImages = mode !== "reels_only";
+  const formatAllowsAutoReels = mode === "images_and_reels" || mode === "reels_only";
 
   const doInstagram =
     socialOptions.enableInstagram !== undefined
       ? Boolean(socialOptions.enableInstagram)
-      : Boolean(socialCfg.autoPopulateInstagram);
+      : Boolean(socialCfg.autoPopulateInstagram) && formatAllowsImages;
   const doFacebook =
     socialOptions.enableFacebook !== undefined
       ? Boolean(socialOptions.enableFacebook)
-      : Boolean(socialCfg.autoPopulateFacebook);
+      : Boolean(socialCfg.autoPopulateFacebook) && formatAllowsImages;
+
+  const doInstagramReel =
+    socialOptions.enableInstagramReel !== undefined
+      ? Boolean(socialOptions.enableInstagramReel)
+      : Boolean(socialCfg.autoPopulateInstagramReels !== false) && formatAllowsAutoReels;
+  const doFacebookReel =
+    socialOptions.enableFacebookReel !== undefined
+      ? Boolean(socialOptions.enableFacebookReel)
+      : Boolean(socialCfg.autoPopulateFacebookReels !== false) && formatAllowsAutoReels;
+
+  const sharedOpts = {
+    imageUrl: socialOptions.imageUrl ?? blog.featured_image,
+    forceOverwrite: Boolean(socialOptions.forceOverwrite),
+    forcePublish: Boolean(socialOptions.forcePublish),
+    forceRepublish: Boolean(socialOptions.forceRepublish),
+    forceRegenerateVideo: Boolean(socialOptions.forceRegenerateVideo),
+    lazyVideo: Boolean(socialOptions.lazyVideo),
+    manualPublish: Boolean(socialOptions.manualPublish),
+    skipExternalPublish: Boolean(socialOptions.skipExternalPublish),
+    queueOnly: Boolean(socialOptions.queueOnly),
+  };
+
+  // Pre-render the shared 9:16 MP4 once if either IG Reel or FB Reel is enabled & not lazy
+  if ((doInstagramReel || doFacebookReel) && !sharedOpts.lazyVideo) {
+    await generateBlogReelVideo(blog, {
+      handle: socialCfg.instagramHandle || "@devinquire",
+      imageUrl: sharedOpts.imageUrl,
+      forceRegenerate: Boolean(socialOptions.forceRegenerateVideo),
+    }).catch((err) => {
+      console.warn("[REEL-GEN] Shared render warning:", err.message);
+    });
+  }
 
   const synced = [];
   if (doInstagram) {
     const ig = await upsertSocialPostForBlog(blog, "instagram", {
+      ...sharedOpts,
       caption: socialOptions.instagramCaption,
-      imageUrl: socialOptions.imageUrl ?? blog.featured_image,
-      forceOverwrite: Boolean(socialOptions.forceOverwrite),
-      forcePublish: Boolean(socialOptions.forcePublish),
-      forceRepublish: Boolean(socialOptions.forceRepublish),
-      manualPublish: Boolean(socialOptions.manualPublish),
-      skipExternalPublish: Boolean(socialOptions.skipExternalPublish),
-      queueOnly: Boolean(socialOptions.queueOnly),
     });
     synced.push(ig);
   }
   if (doFacebook) {
     const fb = await upsertSocialPostForBlog(blog, "facebook", {
+      ...sharedOpts,
       caption: socialOptions.facebookCaption,
-      imageUrl: socialOptions.imageUrl ?? blog.featured_image,
-      forceOverwrite: Boolean(socialOptions.forceOverwrite),
-      forcePublish: Boolean(socialOptions.forcePublish),
-      forceRepublish: Boolean(socialOptions.forceRepublish),
-      manualPublish: Boolean(socialOptions.manualPublish),
-      skipExternalPublish: Boolean(socialOptions.skipExternalPublish),
-      queueOnly: Boolean(socialOptions.queueOnly),
     });
     synced.push(fb);
+  }
+  if (doInstagramReel) {
+    const igReel = await upsertSocialPostForBlog(blog, "instagram_reel", {
+      ...sharedOpts,
+      // When publishing both Image + Reel simultaneously, queue the Reel for 30m anti-spam spacing unless reels_only
+      queueOnly: Boolean(socialOptions.queueOnly) || (doInstagram && !sharedOpts.skipExternalPublish && blog.status === "published"),
+      caption: socialOptions.instagramReelCaption || socialOptions.instagramCaption,
+    });
+    synced.push(igReel);
+  }
+  if (doFacebookReel) {
+    const fbReel = await upsertSocialPostForBlog(blog, "facebook_reel", {
+      ...sharedOpts,
+      queueOnly: Boolean(socialOptions.queueOnly) || (doFacebook && !sharedOpts.skipExternalPublish && blog.status === "published"),
+      caption: socialOptions.facebookReelCaption || socialOptions.facebookCaption,
+    });
+    synced.push(fbReel);
   }
 
   if (synced.length > 0) {
@@ -1587,11 +2011,16 @@ async function processSocialDripQueue() {
         : 0;
       if (lastPubMs && Date.now() - lastPubMs < minGapMins * 60 * 1000) continue;
 
-      const qRes = await db.query(
-        "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts WHERE platform = $1 ORDER BY id ASC",
-        [plt]
+      const allSocRes = await db.query(
+        "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts ORDER BY id ASC"
       );
-      const nextQueuedRow = (qRes.rows || []).find((r) => r.status === "queued");
+      const nextQueuedRow = (allSocRes.rows || []).find(
+        (r) =>
+          r.status === "queued" &&
+          (plt === "instagram"
+            ? isInstagramFamily(r.platform)
+            : isFacebookFamily(r.platform))
+      );
       if (!nextQueuedRow) continue;
 
       const parsed = parseSocialRow(nextQueuedRow);
@@ -2268,7 +2697,7 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
     const dispatchErrors = [];
 
     for (const plt of targetPlatforms) {
-      if (plt !== "instagram" && plt !== "facebook") continue;
+      if (!VALID_SOCIAL_PLATFORMS.has(plt)) continue;
 
       const hashtags = Array.isArray(body.hashtags)
         ? body.hashtags.map(normalizeHashtag).filter(Boolean)
@@ -2296,15 +2725,43 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
       const resolvedTitle = title || caption.split("\n")[0].slice(0, 120) || "Social Post";
       const baseSite = String(blogCfg.siteUrl || "https://devinquire.com").replace(/\/$/, "");
       const cleanSite = baseSite.includes("localhost") ? "https://devinquire.com" : baseSite;
+      const isReel = isReelPlatform(plt);
+
+      let reelVideoUrl = body.videoUrl || existingParsed.videoUrl || undefined;
+      let reelPosterUrl = body.posterUrl || existingParsed.posterUrl || undefined;
+      if (isReel && (!reelVideoUrl || body.forceRegenerateVideo)) {
+        const customKey = body.blogId || existingId || `custom-${Date.now()}`;
+        const rendered = await generateBlogReelVideo(
+          {
+            id: customKey,
+            title: resolvedTitle,
+            excerpt: caption || resolvedTitle,
+            content: caption || resolvedTitle,
+            category: body.category || existingParsed.category || "Engineering",
+            tags: hashtags,
+            featured_image: body.imageUrl || existingParsed.imageUrl || "",
+          },
+          {
+            handle: socialCfg.instagramHandle || "@devinquire",
+            forceRegenerate: true,
+          }
+        );
+        reelVideoUrl = `/api/public/reels/${rendered.mp4Filename}`;
+        reelPosterUrl = `/api/public/reels/${rendered.posterFilename}`;
+      }
 
       const payloadObj = {
         ...existingParsed,
         platform: plt,
+        mediaType: isReel ? "reel" : "image",
         blogId: body.blogId || existingParsed.blogId || null,
         title: resolvedTitle,
         caption: caption || resolvedTitle,
         hashtags,
         imageUrl: body.imageUrl !== undefined ? body.imageUrl : existingParsed.imageUrl || "",
+        videoUrl: reelVideoUrl,
+        posterUrl: reelPosterUrl,
+        durationSec: isReel ? 14 : undefined,
         articleUrl:
           body.articleUrl !== undefined
             ? body.articleUrl
@@ -2315,10 +2772,9 @@ router.post(socialSavePaths, requireMutatingAuth, async (req, res) => {
           existingParsed.authorName ||
           blogCfg.defaultAuthor ||
           "DevInquire Editorial",
-        accountHandle:
-          plt === "instagram"
-            ? socialCfg.instagramHandle || "@devinquire"
-            : socialCfg.facebookPageName || "DevInquire",
+        accountHandle: isInstagramFamily(plt)
+          ? socialCfg.instagramHandle || "@devinquire"
+          : socialCfg.facebookPageName || "DevInquire",
         status: finalStatus,
         customEdited: true,
         updatedAt: new Date().toISOString(),
@@ -2444,7 +2900,7 @@ router.post(socialPublishPaths, requireMutatingAuth, async (req, res) => {
     const dispatched = await dispatchToExternalSocial(parsed, socialCfg, {
       manualPublish: true,
     });
-    const platformLabel = parsed.platform === "instagram" ? "Instagram" : "Facebook";
+    const platformLabel = formatPlatformLabel(parsed.platform);
 
     if (dispatched.deferredToQueue) {
       const queuedPayload = {
@@ -2534,21 +2990,26 @@ router.post(socialDeletePaths, requireMutatingAuth, async (req, res) => {
   }
 });
 
-// Populate / Sync All Existing Blogs to Instagram & Facebook
+// Populate / Sync All Existing Blogs to Instagram & Facebook (Images + Short Video Reels)
 router.post(socialPopulateAllPaths, requireMutatingAuth, async (req, res) => {
-  const { forceOverwrite = false } = req.body || {};
+  const {
+    forceOverwrite = false,
+    includeReels = true,
+    reelsOnly = false,
+  } = req.body || {};
   try {
     await ensureSocialPostsTable();
     const blogsRes = await db.query(
       `SELECT b.*, COALESCE(b.author_name, u.name, 'DevInquire Editorial') as author_name
        FROM blog_posts b
        LEFT JOIN users u ON b.author_id = u.id
-       ORDER BY b.created_at ASC`
+       ORDER BY b.created_at DESC`
     );
     const blogs = blogsRes.rows || [];
     let totalSynced = 0;
 
-    for (const blog of blogs) {
+    for (let idx = 0; idx < blogs.length; idx++) {
+      const blog = blogs[idx];
       let parsedTags = blog.tags;
       if (typeof parsedTags === "string") {
         try {
@@ -2557,14 +3018,18 @@ router.post(socialPopulateAllPaths, requireMutatingAuth, async (req, res) => {
           parsedTags = [];
         }
       }
+      // Eagerly render MP4 for the 3 newest blogs; older backfill reels auto-render on first play/publish
       const synced = await syncBlogToSocialChannels(
         {
           ...blog,
           tags: Array.isArray(parsedTags) ? parsedTags : [],
         },
         {
-          enableInstagram: true,
-          enableFacebook: true,
+          enableInstagram: !reelsOnly,
+          enableFacebook: !reelsOnly,
+          enableInstagramReel: Boolean(includeReels || reelsOnly),
+          enableFacebookReel: Boolean(includeReels || reelsOnly),
+          lazyVideo: idx >= 3,
           forceOverwrite: Boolean(forceOverwrite),
           skipExternalPublish: true,
         }
@@ -2586,13 +3051,142 @@ router.post(socialPopulateAllPaths, requireMutatingAuth, async (req, res) => {
       res,
       "success",
       blogs.length > 0
-        ? `Populated ${totalSynced} Instagram & Facebook post${totalSynced === 1 ? "" : "s"} from ${blogs.length} blog article${blogs.length === 1 ? "" : "s"}.`
+        ? `Populated ${totalSynced} Instagram & Facebook ${
+            reelsOnly ? "short video Reel" : "post & Reel"
+          }${totalSynced === 1 ? "" : "s"} from ${blogs.length} blog article${
+            blogs.length === 1 ? "" : "s"
+          }.`
         : "No blog articles found yet — create an article or run daily.dev pull to auto-populate all channels.",
       { blogCount: blogs.length, socialCount: totalSynced }
     );
   } catch (err) {
     console.error("Social Populate All Error:", err);
     return sendJsonResponse(res, "error", "Failed to populate social channels from blogs.", null, 500);
+  }
+});
+
+// Generate or Regenerate 9:16 Short Video Reels (IG Reels + FB Reels) from a Blog Post
+router.post(reelsGeneratePaths, requireMutatingAuth, async (req, res) => {
+  const {
+    blogId,
+    socialPostId,
+    platforms = ["instagram_reel", "facebook_reel"],
+    forceRegenerate = false,
+    publishNow = false,
+  } = req.body || {};
+
+  try {
+    await ensureSocialPostsTable();
+    const socialCfg = await loadSocialConfig();
+
+    // Case A: Regenerate MP4 for an existing social_posts Reel item
+    if (socialPostId && !blogId) {
+      const sRes = await db.query(
+        "SELECT id, blog_id, platform, title, caption, status, payload, created_at, updated_at FROM social_posts WHERE id = $1 LIMIT 1",
+        [socialPostId]
+      );
+      const sRow = sRes.rows?.[0];
+      if (!sRow) {
+        return sendJsonResponse(res, "error", "Reel post not found.", null, 404);
+      }
+      const parsed = parseSocialRow(sRow);
+      let sourceBlog = null;
+      if (parsed.blogId) {
+        const bRes = await db.query("SELECT * FROM blog_posts WHERE id = $1 LIMIT 1", [
+          parsed.blogId,
+        ]);
+        sourceBlog = bRes.rows?.[0] || null;
+      }
+      const rendered = await generateBlogReelVideo(
+        sourceBlog || {
+          id: parsed.blogId || parsed.id,
+          title: parsed.title,
+          excerpt: parsed.excerpt || parsed.caption,
+          content: parsed.caption,
+          category: parsed.category || "Engineering",
+          tags: parsed.hashtags || [],
+          featured_image: parsed.imageUrl || "",
+        },
+        {
+          handle: socialCfg.instagramHandle || "@devinquire",
+          forceRegenerate: true,
+        }
+      );
+      const cacheBust = `?v=${Date.now()}`;
+      const updatedPayload = {
+        ...parsed,
+        mediaType: "reel",
+        videoUrl: `/api/public/reels/${rendered.mp4Filename}${cacheBust}`,
+        posterUrl: `/api/public/reels/${rendered.posterFilename}${cacheBust}`,
+        durationSec: rendered.durationSec,
+        updatedAt: new Date().toISOString(),
+      };
+      await db.query(
+        "UPDATE social_posts SET payload = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+        [JSON.stringify(updatedPayload), sRow.id]
+      );
+      return sendJsonResponse(res, "success", "9:16 Short Video Reel regenerated!", {
+        reels: [updatedPayload],
+        videoUrl: updatedPayload.videoUrl,
+      });
+    }
+
+    // Case B: Generate IG Reel + FB Reel from a Blog article
+    if (!blogId) {
+      return sendJsonResponse(res, "error", "blogId or socialPostId is required.", null, 400);
+    }
+
+    const blogRes = await db.query("SELECT * FROM blog_posts WHERE id = $1 LIMIT 1", [blogId]);
+    const blog = blogRes.rows?.[0];
+    if (!blog) {
+      return sendJsonResponse(res, "error", "Blog article not found.", null, 404);
+    }
+
+    const targetSet = new Set(
+      (Array.isArray(platforms) ? platforms : ["instagram_reel", "facebook_reel"]).map((p) =>
+        String(p).toLowerCase()
+      )
+    );
+
+    const rendered = await generateBlogReelVideo(blog, {
+      handle: socialCfg.instagramHandle || "@devinquire",
+      forceRegenerate: Boolean(forceRegenerate),
+    });
+
+    const syncedReels = await syncBlogToSocialChannels(blog, {
+      enableInstagram: false,
+      enableFacebook: false,
+      enableInstagramReel: targetSet.has("instagram_reel"),
+      enableFacebookReel: targetSet.has("facebook_reel"),
+      forceRegenerateVideo: false,
+      forcePublish: Boolean(publishNow),
+      manualPublish: Boolean(publishNow),
+      skipExternalPublish: !publishNow,
+    });
+
+    return sendJsonResponse(
+      res,
+      "success",
+      publishNow
+        ? `Generated 9:16 Reel MP4 & dispatched to ${syncedReels
+            .map((r) => formatPlatformLabel(r.platform))
+            .join(" & ")}!`
+        : `Generated 9:16 Short Video Reel (${rendered.durationSec}s MP4) for Instagram Reels & Facebook Reels!`,
+      {
+        reels: syncedReels,
+        videoUrl: `/api/public/reels/${rendered.mp4Filename}`,
+        posterUrl: `/api/public/reels/${rendered.posterFilename}`,
+      }
+    );
+  } catch (err) {
+    console.error("Reel Generate API Error:", err);
+    return sendJsonResponse(
+      res,
+      "error",
+      `Failed to generate short video Reel: ${err.message}`,
+      null,
+      500
+    );
   }
 });
 

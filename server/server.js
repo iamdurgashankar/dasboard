@@ -143,6 +143,7 @@ if (isProd) {
             "https://cdn.jsdelivr.net",
           ],
           "img-src": ["'self'", "data:", "https:", "http:", "blob:"],
+          "media-src": ["'self'", "data:", "https:", "http:", "blob:"],
           "font-src": [
             "'self'",
             "https://fonts.gstatic.com",
@@ -175,6 +176,7 @@ if (isProd) {
     helmet({
       contentSecurityPolicy: false,
       hsts: false,
+      crossOriginResourcePolicy: { policy: "cross-origin" },
     }),
   );
 }

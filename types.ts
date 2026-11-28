@@ -39,18 +39,26 @@ export interface BlogPost {
   featured_image?: string;
 }
 
-export type SocialPlatform = 'instagram' | 'facebook';
+export type SocialPlatform =
+  | 'instagram'
+  | 'facebook'
+  | 'instagram_reel'
+  | 'facebook_reel';
 
 export interface SocialPost {
   id: string;
   blogId?: string | null;
   blogSlug?: string;
   platform: SocialPlatform;
+  mediaType?: 'image' | 'reel';
   title: string;
   excerpt?: string;
   caption: string;
   hashtags: string[];
   imageUrl?: string;
+  videoUrl?: string;
+  posterUrl?: string;
+  durationSec?: number;
   articleUrl?: string;
   category?: string;
   authorName?: string;

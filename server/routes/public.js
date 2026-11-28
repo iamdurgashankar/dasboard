@@ -3,9 +3,12 @@
  * Exposes public endpoints that do not require admin authentication.
  */
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
 import nodemailer from 'nodemailer';
 import db from '../db.js';
 import { sendJsonResponse, createNotification } from '../utils.js';
+import { generateBlogReelVideo, REELS_DIR } from '../reelGenerator.js';
 
 const router = express.Router();
 
@@ -1007,6 +1010,108 @@ router.post(['/quotation/respond', '/quotation/respond.php'], async (req, res) =
     } catch (err) {
         console.error("Public Quotation Response Error:", err);
         return sendJsonResponse(res, "error", "Failed to save quotation response.", null, 500);
+    }
+});
+
+// Public Short Video (Instagram Reels & Facebook Reels) Stream Endpoint with HTTP Range + Auto-Regeneration
+router.get('/reels/:filename', async (req, res) => {
+    const rawName = path.basename(String(req.params.filename || '').trim());
+    if (!/^blog-[a-z0-9-_]+\.(mp4|jpg)$/i.test(rawName)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid reel asset filename.' });
+    }
+
+    const isMp4 = rawName.toLowerCase().endsWith('.mp4');
+    let filePath = path.join(REELS_DIR, rawName);
+
+    try {
+        // Self-heal on demand if MP4/poster was cleared by a container redeploy
+        if (!fs.existsSync(filePath)) {
+            const key = rawName.replace(/^blog-/i, '').replace(/\.(mp4|jpg)$/i, '');
+            let blogRow = null;
+            if (/^\d+$/.test(key)) {
+                const byId = await db.query('SELECT * FROM blog_posts WHERE id = $1 LIMIT 1', [Number(key)]);
+                blogRow = byId.rows?.[0] || null;
+            }
+            if (!blogRow) {
+                const bySlug = await db.query('SELECT * FROM blog_posts WHERE LOWER(slug) = LOWER($1) LIMIT 1', [key]);
+                blogRow = bySlug.rows?.[0] || null;
+            }
+            if (!blogRow) {
+                // Also check social_posts in case of standalone Reel
+                const socRes = await db.query(
+                    'SELECT title, caption, payload, blog_id FROM social_posts ORDER BY id DESC LIMIT 100'
+                );
+                const matchedSoc = (socRes.rows || []).find((r) => {
+                    try {
+                        const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload || {};
+                        return String(p.videoUrl || '').includes(rawName) || String(p.posterUrl || '').includes(rawName);
+                    } catch {
+                        return false;
+                    }
+                });
+                if (matchedSoc) {
+                    const p = typeof matchedSoc.payload === 'string' ? JSON.parse(matchedSoc.payload) : matchedSoc.payload || {};
+                    blogRow = {
+                        id: key,
+                        title: matchedSoc.title || p.title || 'DevInquire Tech Insight',
+                        excerpt: p.excerpt || matchedSoc.caption || '',
+                        content: matchedSoc.caption || '',
+                        category: p.category || 'Engineering',
+                        tags: p.hashtags || [],
+                        featured_image: p.imageUrl || ''
+                    };
+                }
+            }
+
+            if (blogRow) {
+                const rendered = await generateBlogReelVideo({ ...blogRow, id: key });
+                filePath = isMp4 ? rendered.mp4Path : rendered.posterPath;
+            }
+        }
+
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ status: 'error', message: 'Reel video not found.' });
+        }
+
+        const stat = fs.statSync(filePath);
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+
+        if (req.query.download === '1') {
+            res.setHeader('Content-Disposition', `attachment; filename="${rawName}"`);
+        }
+
+        if (!isMp4) {
+            res.setHeader('Content-Type', 'image/jpeg');
+            res.setHeader('Content-Length', stat.size);
+            return fs.createReadStream(filePath).pipe(res);
+        }
+
+        res.setHeader('Content-Type', 'video/mp4');
+        res.setHeader('Accept-Ranges', 'bytes');
+
+        const range = req.headers.range;
+        if (range) {
+            const parts = range.replace(/bytes=/, '').split('-');
+            const start = parseInt(parts[0], 10) || 0;
+            const end = parts[1] ? Math.min(stat.size - 1, parseInt(parts[1], 10)) : stat.size - 1;
+            if (start >= stat.size || start > end) {
+                res.status(416).setHeader('Content-Range', `bytes */${stat.size}`);
+                return res.end();
+            }
+            const chunkSize = end - start + 1;
+            res.status(206);
+            res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+            res.setHeader('Content-Length', chunkSize);
+            return fs.createReadStream(filePath, { start, end }).pipe(res);
+        }
+
+        res.setHeader('Content-Length', stat.size);
+        return fs.createReadStream(filePath).pipe(res);
+    } catch (err) {
+        console.error('Reel Stream Error:', err);
+        return res.status(500).json({ status: 'error', message: 'Failed to stream reel video.' });
     }
 });
 

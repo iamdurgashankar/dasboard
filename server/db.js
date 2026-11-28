@@ -110,6 +110,9 @@ function getDefaultSettings() {
     social_config: {
       autoPopulateInstagram: true,
       autoPopulateFacebook: true,
+      autoPopulateInstagramReels: true,
+      autoPopulateFacebookReels: true,
+      socialPublishFormat: "images_and_reels",
       autoSyncOnBlogUpdate: true,
       autoPopulateDailyDev: true,
       autoPublishOnBlogPublish: true,
