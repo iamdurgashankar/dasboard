@@ -181,9 +181,11 @@ export interface User {
   name: string;
   email: string;
   role: UserRole;
-  status: 'active' | 'pending';
+  status: 'active' | 'pending' | 'rejected';
   avatar?: string;
   joinDate: string;
+  rejectionReason?: string;
+  decidedAt?: string;
 }
 
 export enum DashboardTab {

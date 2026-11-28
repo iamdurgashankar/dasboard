@@ -500,7 +500,48 @@ function handleOfflineFallback(endpoint: string, options: RequestInit = {}): any
             String(u.id) === String(body.id) ? { ...u, ...body } : u
         );
         saveFallbackStore(store);
-        return { status: 'success', message: 'User updated.' };
+        return { status: 'success', message: 'User updated.', data: { emailSent: false } };
+    }
+
+    if (endpoint.startsWith('/users/reject')) {
+        if (body.deleteAccount) {
+            store.users = store.users.filter((u: any) => String(u.id) !== String(body.id));
+        } else {
+            store.users = store.users.map((u: any) =>
+                String(u.id) === String(body.id)
+                    ? { ...u, status: 'rejected', rejectionReason: body.reason || '' }
+                    : u
+            );
+        }
+        saveFallbackStore(store);
+        return { status: 'success', message: 'Access request rejected.', data: { emailSent: false } };
+    }
+
+    if (endpoint.startsWith('/users/email-config')) {
+        if (!store.userEmailConfig) {
+            store.userEmailConfig = {
+                adminEmail: 'admin@devinquire.com',
+                fromName: 'DevInquire',
+                fromEmail: 'admin@devinquire.com',
+                smtpHost: 'smtp.hostinger.com',
+                smtpPort: 465,
+                smtpUser: '',
+                hasSmtpPass: false,
+                smtpConfigured: false,
+                web3FormsEnabled: true,
+                bccAdminOnDecision: true,
+                recentLogs: []
+            };
+        }
+        if (options.method === 'POST') {
+            store.userEmailConfig = {
+                ...store.userEmailConfig,
+                ...body,
+                smtpConfigured: Boolean(body.smtpUser && (body.smtpPass || store.userEmailConfig.hasSmtpPass))
+            };
+            saveFallbackStore(store);
+        }
+        return { status: 'success', message: 'Email settings loaded.', data: store.userEmailConfig };
     }
 
     if (endpoint.startsWith('/users/delete')) {
@@ -828,10 +869,26 @@ export const api = {
             method: 'POST',
             body: JSON.stringify(data)
         }),
-        delete: (id: string) => api.fetch('/users/delete', {
+        reject: (data: { id: string; reason?: string; deleteAccount?: boolean }) =>
+            api.fetch('/users/reject', {
+                method: 'POST',
+                body: JSON.stringify(data)
+            }),
+        delete: (id: string, reason?: string) => api.fetch('/users/delete', {
             method: 'POST',
-            body: JSON.stringify({ id })
-        })
+            body: JSON.stringify({ id, reason })
+        }),
+        getEmailConfig: () => api.fetch('/users/email-config'),
+        saveEmailConfig: (data: any) =>
+            api.fetch('/users/email-config', {
+                method: 'POST',
+                body: JSON.stringify(data)
+            }),
+        sendTestEmail: (data?: any) =>
+            api.fetch('/users/email-test', {
+                method: 'POST',
+                body: JSON.stringify(data || {})
+            })
     },
 
     contacts: {

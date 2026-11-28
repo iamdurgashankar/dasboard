@@ -57,9 +57,17 @@ const Login: React.FC<LoginProps> = ({ onLogin, theme = 'light', toggleTheme }) 
             <i className="fas fa-user-check badge-white"></i>
           </div>
           <h2 className="text-2xl font-semibold mb-2 tracking-tight text-[var(--apple-text-primary)]">Request Submitted</h2>
-          <p className="text-[var(--apple-text-secondary)] leading-relaxed mb-8 text-[14px]">
-            Your workspace profile for <span className="text-[var(--apple-text-primary)] font-semibold">{pendingUser.name}</span> has been queued for administrator approval.
+          <p className="text-[var(--apple-text-secondary)] leading-relaxed mb-4 text-[14px]">
+            Your workspace access request for{' '}
+            <span className="text-[var(--apple-text-primary)] font-semibold">{pendingUser.name}</span>{' '}
+            has been sent to{' '}
+            <span className="text-[var(--apple-blue)] font-semibold">admin@devinquire.com</span>.
           </p>
+          <div className="mb-7 p-3.5 rounded-[14px] apple-subcard text-[12.5px] text-[var(--apple-text-secondary)] leading-relaxed">
+            <i className="fas fa-envelope-circle-check text-[#28CD41] mr-1.5"></i>
+            You will receive an email confirmation at{' '}
+            <strong className="text-[var(--apple-text-primary)]">{pendingUser.email}</strong> as soon as your access is approved or updated.
+          </div>
           <button
             onClick={() => { setPendingUser(null); setIsLogin(true); }}
             className="w-full py-3.5 apple-secondary-btn rounded-[14px] font-medium text-[14px]"

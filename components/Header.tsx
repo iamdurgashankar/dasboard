@@ -410,7 +410,13 @@ const Header: React.FC<HeaderProps> = ({
                 notifications.map((notif) => (
                   <div
                     key={notif.id}
-                    onClick={() => handleMarkRead(notif.id)}
+                    onClick={() => {
+                      handleMarkRead(notif.id);
+                      if (notif.link) {
+                        setIsNotifOpen(false);
+                        navigate(notif.link);
+                      }
+                    }}
                     className={`p-3.5 flex gap-3.5 cursor-pointer transition-colors hover:bg-[var(--apple-surface-subcard-hover)] relative ${
                       !notif.isRead ? 'bg-[#4e45e1]/[0.04]' : ''
                     }`}

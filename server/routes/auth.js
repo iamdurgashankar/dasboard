@@ -12,6 +12,7 @@ import {
     normalizeRole,
     createNotification
 } from '../utils.js';
+import { sendAdminNewSignupAlert } from '../mailer.js';
 
 const router = express.Router();
 
@@ -59,8 +60,26 @@ router.post(loginPaths, async (req, res) => {
             if (isMatch) {
                 const rawStatus = String(user.status || '').trim().toLowerCase();
                 const status = rawStatus || (user.is_active === 1 ? 'active' : 'pending');
+                if (status === 'rejected') {
+                    const reasonSuffix = user.rejection_reason
+                        ? ` Note: ${user.rejection_reason}`
+                        : '';
+                    return sendJsonResponse(
+                        res,
+                        "error",
+                        `Your workspace access request was declined by an administrator.${reasonSuffix}`,
+                        null,
+                        403
+                    );
+                }
                 if (status !== 'active') {
-                    return sendJsonResponse(res, "error", "Account pending approval.", null, 403);
+                    return sendJsonResponse(
+                        res,
+                        "error",
+                        "Account pending administrator approval. You will receive an email confirmation once reviewed.",
+                        null,
+                        403
+                    );
                 }
 
                 const cleanUser = {
@@ -115,54 +134,99 @@ router.post(registerPaths, async (req, res) => {
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
+    const cleanName = String(name).trim();
+    const requestOrigin = String(req.headers.origin || '').trim();
 
     try {
         const existing = await db.query(
-            'SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
+            'SELECT id, status FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1',
             [normalizedEmail]
         );
-        if (existing.rows && existing.rows.length > 0) {
-            return sendJsonResponse(res, "error", "Identity already registered in ledger.", null, 409);
-        }
+        const existingRow = existing.rows?.[0] || null;
 
+        let userId = null;
         const hashedPass = await bcrypt.hash(password, 10);
-        const insertRes = await db.query(
-            `INSERT INTO users (email, password, name, role, status)
-             VALUES ($1, $2, $3, $4::user_role, $5::user_status)
-             RETURNING id`,
-            [normalizedEmail, hashedPass, String(name).trim(), 'Developer', 'pending']
-        );
-        const userId = insertRes.rows?.[0]?.id || `req-${Date.now()}`;
 
-        if (insertRes.rows?.[0]?.id) {
-            await db.query(
-                "UPDATE users SET role = $1, status = $2 WHERE id = $3",
-                ['Developer', 'pending', userId]
-            ).catch(() => {});
-            await db.query(
-                "UPDATE users SET is_active = 0 WHERE id = $1",
-                [userId]
-            ).catch(() => {});
+        if (existingRow) {
+            const prevStatus = String(existingRow.status || '').trim().toLowerCase();
+            if (prevStatus === 'rejected') {
+                // Allow a previously rejected user to submit a fresh access request
+                userId = existingRow.id;
+                await db.query(
+                    "UPDATE users SET name = $1, password = $2, role = $3, status = $4, rejection_reason = $5, decided_at = $6 WHERE id = $7",
+                    [cleanName, hashedPass, 'Developer', 'pending', null, null, userId]
+                );
+                await db.query("UPDATE users SET is_active = 0 WHERE id = $1", [userId]).catch(() => {});
+            } else {
+                return sendJsonResponse(
+                    res,
+                    "error",
+                    prevStatus === 'pending'
+                        ? "An access request for this email is already pending administrator review."
+                        : "An account with this email is already registered.",
+                    null,
+                    409
+                );
+            }
+        } else {
+            const insertRes = await db.query(
+                `INSERT INTO users (email, password, name, role, status)
+                 VALUES ($1, $2, $3, $4::user_role, $5::user_status)
+                 RETURNING id`,
+                [normalizedEmail, hashedPass, cleanName, 'Developer', 'pending']
+            );
+            userId = insertRes.rows?.[0]?.id || `req-${Date.now()}`;
+
+            if (insertRes.rows?.[0]?.id) {
+                await db.query(
+                    "UPDATE users SET role = $1, status = $2 WHERE id = $3",
+                    ['Developer', 'pending', userId]
+                ).catch(() => {});
+                await db.query(
+                    "UPDATE users SET is_active = 0 WHERE id = $1",
+                    [userId]
+                ).catch(() => {});
+            }
         }
 
+        // 1. In-app Dashboard Notification Bell for Admin
         await createNotification(
             null,
-            'info',
-            'New Access Request',
-            `${String(name).trim()} (${normalizedEmail}) requested workspace access.`,
-            '/users'
+            'warning',
+            'New Account Signup Request',
+            `${cleanName} (${normalizedEmail}) signed up and is awaiting approval.`,
+            '/users?tab=pending'
         ).catch(() => {});
 
-        return sendJsonResponse(res, "success", "Access request queued for administrative override.", {
-            user: {
-                id: String(userId),
-                name: String(name).trim(),
-                email: normalizedEmail,
-                role: 'Developer',
-                status: 'pending',
-                joinDate: new Date().toISOString().split('T')[0]
-            }
+        // 2. Email Notification to admin@devinquire.com (+ applicant acknowledgement when SMTP active)
+        const mailAlert = await sendAdminNewSignupAlert({
+            name: cleanName,
+            email: normalizedEmail,
+            role: 'Developer',
+            requestedAt: new Date().toISOString(),
+            requestOrigin
+        }).catch((mailErr) => {
+            console.warn('[Auth] Admin signup email alert warning:', mailErr.message);
+            return { sent: false, channel: 'in_app_only' };
         });
+
+        return sendJsonResponse(
+            res,
+            "success",
+            "Access request submitted! admin@devinquire.com has been notified — you will receive an email confirmation once reviewed.",
+            {
+                user: {
+                    id: String(userId),
+                    name: cleanName,
+                    email: normalizedEmail,
+                    role: 'Developer',
+                    status: 'pending',
+                    joinDate: new Date().toISOString().split('T')[0]
+                },
+                adminNotified: true,
+                emailChannel: mailAlert.channel
+            }
+        );
     } catch (err) {
         console.error("Register API Error:", err);
         return sendJsonResponse(res, "error", `Registration Error: ${err.message}`, null, 500);

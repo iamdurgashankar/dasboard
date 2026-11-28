@@ -239,6 +239,8 @@ function executeEmbeddedQuery(text, params = []) {
       role: u.role,
       status: u.status,
       avatar: u.avatar,
+      rejection_reason: u.rejection_reason || null,
+      decided_at: u.decided_at || null,
       joinDate: u.created_at,
       active_tasks: store.tasks.filter(
         (t) => Number(t.assignee_id) === Number(u.id) && t.status !== "completed",
@@ -1385,6 +1387,8 @@ export const db = {
           role user_role DEFAULT 'Viewer',
           status user_status DEFAULT 'pending',
           avatar VARCHAR(255) DEFAULT NULL,
+          rejection_reason TEXT DEFAULT NULL,
+          decided_at VARCHAR(100) DEFAULT NULL,
           join_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
           created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
@@ -1520,6 +1524,8 @@ export const db = {
           "ALTER TABLE users MODIFY COLUMN role VARCHAR(50) DEFAULT 'Developer'",
           "ALTER TABLE users MODIFY COLUMN status VARCHAR(50) DEFAULT 'pending'",
           "ALTER TABLE users ADD COLUMN avatar VARCHAR(255) DEFAULT NULL",
+          "ALTER TABLE users ADD COLUMN rejection_reason TEXT DEFAULT NULL",
+          "ALTER TABLE users ADD COLUMN decided_at VARCHAR(100) DEFAULT NULL",
           "ALTER TABLE users ADD COLUMN join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
           "ALTER TABLE projects ADD COLUMN last_update TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
           "ALTER TABLE projects ADD COLUMN repo_url VARCHAR(255) DEFAULT NULL",

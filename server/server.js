@@ -491,9 +491,12 @@ async function ensureFreshDistBuild() {
     const indexHtml = path.join(distPath, "index.html");
     const watchedSources = [
       path.join(rootDir, "App.tsx"),
+      path.join(rootDir, "components/Header.tsx"),
       path.join(rootDir, "pages/BlogManagement.tsx"),
       path.join(rootDir, "pages/ContactSubmissions.tsx"),
+      path.join(rootDir, "pages/Login.tsx"),
       path.join(rootDir, "pages/Quotations.tsx"),
+      path.join(rootDir, "pages/UserManagement.tsx"),
       path.join(rootDir, "services/api.ts"),
     ];
     let needsBuild = !fs.existsSync(indexHtml);
