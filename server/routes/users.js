@@ -9,7 +9,8 @@ import db from '../db.js';
 import {
     sendJsonResponse,
     requireAuth,
-    requireMutatingAuth,
+    requireAdmin,
+    requireMutatingAdmin,
     createNotification
 } from '../utils.js';
 import {
@@ -30,8 +31,8 @@ const deletePaths = ['/delete', '/delete.php'];
 const emailConfigPaths = ['/email-config', '/email-config.php'];
 const emailTestPaths = ['/email-test', '/email-test.php'];
 
-// Get Access & Notification Email Settings (Admin)
-router.get(emailConfigPaths, requireAuth, async (req, res) => {
+// Get Access & Notification Email Settings (Admin Only)
+router.get(emailConfigPaths, requireAdmin, async (req, res) => {
     try {
         const cfg = await loadAccountMailConfig();
         return sendJsonResponse(res, "success", "Email notification settings retrieved.", {
@@ -54,7 +55,7 @@ router.get(emailConfigPaths, requireAuth, async (req, res) => {
 });
 
 // Save Access & Notification Email Settings (Admin)
-router.post(emailConfigPaths, requireMutatingAuth, async (req, res) => {
+router.post(emailConfigPaths, requireMutatingAdmin, async (req, res) => {
     try {
         const updated = await saveAccountMailConfig(req.body || {});
         return sendJsonResponse(res, "success", "Email notification settings saved.", {
@@ -77,7 +78,7 @@ router.post(emailConfigPaths, requireMutatingAuth, async (req, res) => {
 });
 
 // Send Test Email to Verify SMTP Delivery
-router.post(emailTestPaths, requireMutatingAuth, async (req, res) => {
+router.post(emailTestPaths, requireMutatingAdmin, async (req, res) => {
     try {
         if (req.body && (req.body.smtpHost || req.body.smtpUser || req.body.smtpPass)) {
             await saveAccountMailConfig(req.body);
@@ -106,7 +107,7 @@ router.post(emailTestPaths, requireMutatingAuth, async (req, res) => {
 });
 
 // Create / Provision User API (Admin)
-router.post(createPaths, requireMutatingAuth, async (req, res) => {
+router.post(createPaths, requireMutatingAdmin, async (req, res) => {
     const { name, email, password, role, avatar, sendWelcomeEmail = true } = req.body || {};
     if (!name || !email) {
         return sendJsonResponse(res, "error", "Name and email are required.");
@@ -213,7 +214,7 @@ router.get(listPaths, requireAuth, async (req, res) => {
 });
 
 // Update User Identity / Approve Access Request API
-router.post(updatePaths, requireMutatingAuth, async (req, res) => {
+router.post(updatePaths, requireMutatingAdmin, async (req, res) => {
     const { id, role, status, name, email, password, avatar, reason } = req.body || {};
 
     if (!id) {
@@ -347,7 +348,7 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
 });
 
 // Reject Access Request API (Marks rejected + sends rejection email to requested person)
-router.post(rejectPaths, requireMutatingAuth, async (req, res) => {
+router.post(rejectPaths, requireMutatingAdmin, async (req, res) => {
     const { id, reason = '', deleteAccount = false } = req.body || {};
 
     if (!id) {
@@ -406,7 +407,7 @@ router.post(rejectPaths, requireMutatingAuth, async (req, res) => {
 });
 
 // Decommission User API
-router.post(deletePaths, requireMutatingAuth, async (req, res) => {
+router.post(deletePaths, requireMutatingAdmin, async (req, res) => {
     const { id, reason = '' } = req.body || {};
 
     if (!id) {

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { ContactSubmission, InquiryPaymentStatus } from '../types';
+import { ContactSubmission, InquiryPaymentStatus, User } from '../types';
 import { api } from '../services/api';
 
 interface InquiryConfig {
@@ -67,7 +67,12 @@ function formatPlanLabel(plan?: string, amount?: number): string {
   return plan || 'Standard Inquiry';
 }
 
-const ContactSubmissions: React.FC = () => {
+interface ContactSubmissionsProps {
+  currentUser?: User | null;
+}
+
+const ContactSubmissions: React.FC<ContactSubmissionsProps> = ({ currentUser }) => {
+  const isAdmin = currentUser?.role === 'Admin';
   const [submissions, setSubmissions] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -596,13 +601,15 @@ const ContactSubmissions: React.FC = () => {
             <i className={`fas fa-arrows-rotate text-[var(--apple-blue)] text-xs ${isLoading ? 'fa-spin' : ''}`}></i>
             <span>Refresh</span>
           </button>
-          <button
-            onClick={() => setShowConfigModal(true)}
-            className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
-          >
-            <i className="fas fa-sliders text-[var(--apple-blue)] text-xs shrink-0"></i>
-            <span>Inquiry Settings</span>
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setShowConfigModal(true)}
+              className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
+            >
+              <i className="fas fa-sliders text-[var(--apple-blue)] text-xs shrink-0"></i>
+              <span>Inquiry Mail Settings</span>
+            </button>
+          )}
           <button
             onClick={() => {
               setNewInquiry((prev) => ({ ...prev, priority: config.defaultPriority || 'Medium' }));
@@ -1598,17 +1605,17 @@ const ContactSubmissions: React.FC = () => {
         </div>
       )}
 
-      {/* Inquiry Configuration Modal (Admin) */}
-      {showConfigModal && (
+      {/* Inquiry Configuration Modal (Admin Only — Independent from Access & Users Email Settings) */}
+      {isAdmin && showConfigModal && (
         <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
           <div className="apple-glass rounded-[24px] w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-6 py-4 border-b border-[var(--apple-border)] flex items-center justify-between">
               <div>
                 <h3 className="text-[16px] font-semibold text-[var(--apple-text-primary)]">
-                  Client Inquiry Configuration
+                  Client Inquiry Mail &amp; Routing Settings
                 </h3>
                 <p className="text-[12px] text-[var(--apple-text-secondary)]">
-                  Configure intake routing, SLA targets, and automated response templates.
+                  Dedicated mailbox setup for website inquiries (<code>contact@devinquire.com</code>) — separate from Access &amp; Users account emails.
                 </p>
               </div>
               <button

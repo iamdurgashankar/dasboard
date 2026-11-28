@@ -186,6 +186,37 @@ export function requireMutatingAuth(req, res, next) {
 }
 
 /**
+ * Require Administrator role for read-sensitive configuration endpoints
+ */
+export function requireAdmin(req, res, next) {
+    hydrateSessionFromToken(req);
+    if (!req.session?.user_id) {
+        return sendJsonResponse(res, "error", "Unauthorized: Neural link closed.", null, 401);
+    }
+    if (normalizeRole(req.session?.user_role) !== 'Admin') {
+        return sendJsonResponse(res, "error", "Forbidden: Administrator privileges required.", null, 403);
+    }
+    next();
+}
+
+/**
+ * Require Administrator role + CSRF validation for mutating configuration/user endpoints
+ */
+export function requireMutatingAdmin(req, res, next) {
+    hydrateSessionFromToken(req);
+    if (!req.session?.user_id) {
+        return sendJsonResponse(res, "error", "Unauthorized: Neural link closed.", null, 401);
+    }
+    if (!validateCsrfToken(req)) {
+        return sendJsonResponse(res, "error", "Security Violation: CSRF mismatch. Access revoked.", null, 403);
+    }
+    if (normalizeRole(req.session?.user_role) !== 'Admin') {
+        return sendJsonResponse(res, "error", "Forbidden: Administrator privileges required.", null, 403);
+    }
+    next();
+}
+
+/**
  * Create a new notification Signal in Database
  */
 export async function createNotification(userId, type, title, message, link = null) {

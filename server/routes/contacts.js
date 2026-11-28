@@ -8,6 +8,8 @@ import {
     sendJsonResponse, 
     requireAuth, 
     requireMutatingAuth,
+    requireMutatingAdmin,
+    normalizeRole,
     createNotification
 } from '../utils.js';
 import { createSmtpTransporter, resolveSmtpSettings } from './public.js';
@@ -21,10 +23,21 @@ const deletePaths = ['/delete', '/delete.php'];
 const configPaths = ['/config', '/config.php'];
 const testSmtpPaths = ['/test-smtp', '/test_smtp', '/test-smtp.php'];
 
-// Get Client Inquiry Configuration
+// Get Client Inquiry Configuration (masks SMTP credentials for non-Admin roles)
 router.get(configPaths, requireAuth, async (req, res) => {
     try {
-        const config = db.getSettings('contacts_config');
+        const config = db.getSettings('contacts_config') || {};
+        const isAdmin = normalizeRole(req.session?.user_role) === 'Admin';
+        if (!isAdmin) {
+            return sendJsonResponse(res, "success", "Inquiry preferences retrieved.", {
+                defaultPriority: config.defaultPriority || 'Medium',
+                webhookIntakeEnabled: config.webhookIntakeEnabled !== false,
+                autoReplyEnabled: config.autoReplyEnabled !== false,
+                autoReplySubject: config.autoReplySubject || 'Thank you for contacting DevInquire',
+                autoReplyTemplate: config.autoReplyTemplate || '',
+                slaHours: config.slaHours || 24
+            });
+        }
         return sendJsonResponse(res, "success", "Inquiry configuration retrieved.", config);
     } catch (err) {
         console.error("Contact Config Get Error:", err);
@@ -32,8 +45,8 @@ router.get(configPaths, requireAuth, async (req, res) => {
     }
 });
 
-// Update Client Inquiry Configuration (Admin)
-router.post(configPaths, requireMutatingAuth, async (req, res) => {
+// Update Client Inquiry Configuration (Admin Only)
+router.post(configPaths, requireMutatingAdmin, async (req, res) => {
     try {
         const updated = await db.updateSettingsAsync('contacts_config', req.body || {});
         return sendJsonResponse(res, "success", "Inquiry configuration saved.", updated);
@@ -43,8 +56,8 @@ router.post(configPaths, requireMutatingAuth, async (req, res) => {
     }
 });
 
-// Verify & Send Live Test Email via Configured SMTP (Admin)
-router.post(testSmtpPaths, requireMutatingAuth, async (req, res) => {
+// Verify & Send Live Test Email via Configured SMTP (Admin Only)
+router.post(testSmtpPaths, requireMutatingAdmin, async (req, res) => {
     try {
         const existingConfig = db.getSettings('contacts_config');
         const mergedConfig = {

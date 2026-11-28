@@ -10,6 +10,8 @@ import {
   sendJsonResponse,
   requireAuth,
   requireMutatingAuth,
+  requireMutatingAdmin,
+  normalizeRole,
   createNotification,
 } from "../utils.js";
 
@@ -1672,8 +1674,8 @@ router.get(configPaths, requireAuth, async (req, res) => {
   }
 });
 
-// Update Blog Configuration API (Admin)
-router.post(configPaths, requireMutatingAuth, async (req, res) => {
+// Update Blog Configuration API (Admin Only)
+router.post(configPaths, requireMutatingAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     if (typeof body.categories === "string") {
@@ -2145,8 +2147,8 @@ router.get(automationStatusPaths, requireAuth, async (req, res) => {
   }
 });
 
-// Save Daily.dev Blog Automation Workflow Config
-router.post(automationConfigPaths, requireMutatingAuth, async (req, res) => {
+// Save Daily.dev Blog Automation Workflow Config (Admin Only)
+router.post(automationConfigPaths, requireMutatingAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const current = await loadAutomationConfig();
@@ -2594,10 +2596,20 @@ router.post(socialPopulateAllPaths, requireMutatingAuth, async (req, res) => {
   }
 });
 
-// Get Social & Omnichannel Automation Config
+// Get Social & Omnichannel Automation Config (masks Meta tokens for non-Admin roles)
 router.get(socialConfigPaths, requireAuth, async (req, res) => {
   try {
     const cfg = await loadSocialConfig();
+    if (normalizeRole(req.session?.user_role) !== "Admin") {
+      return sendJsonResponse(res, "success", "Social configuration retrieved.", {
+        ...cfg,
+        metaAppId: "",
+        metaAppSecret: "",
+        instagramAccessToken: cfg.instagramAccessToken ? "connected" : "",
+        facebookAccessToken: cfg.facebookAccessToken ? "connected" : "",
+        webhookUrl: cfg.webhookUrl ? "configured" : "",
+      });
+    }
     return sendJsonResponse(res, "success", "Social configuration retrieved.", cfg);
   } catch (err) {
     console.error("Social Config Get Error:", err);
@@ -2605,8 +2617,8 @@ router.get(socialConfigPaths, requireAuth, async (req, res) => {
   }
 });
 
-// Save Social & Omnichannel Automation Config
-router.post(socialConfigPaths, requireMutatingAuth, async (req, res) => {
+// Save Social & Omnichannel Automation Config (Admin Only)
+router.post(socialConfigPaths, requireMutatingAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const current = await loadSocialConfig();
@@ -2779,8 +2791,8 @@ function applySelectedPageToConfig(currentCfg, connectedPages, preferredPageId =
   };
 }
 
-// 1. Generate Meta OAuth Login URL (Supports Both Popup & Same-Tab Redirect)
-router.post(socialOAuthUrlPaths, requireMutatingAuth, async (req, res) => {
+// 1. Generate Meta OAuth Login URL (Admin Only)
+router.post(socialOAuthUrlPaths, requireMutatingAdmin, async (req, res) => {
   try {
     const body = req.body || {};
     const current = await loadSocialConfig();
@@ -2979,8 +2991,8 @@ router.get(socialOAuthCallbackPaths, async (req, res) => {
   }
 });
 
-// 3. Auto-Discover Facebook Pages & Linked Instagram Account from Access Token
-router.post(socialDiscoverPaths, requireMutatingAuth, async (req, res) => {
+// 3. Auto-Discover Facebook Pages & Linked Instagram Account from Access Token (Admin Only)
+router.post(socialDiscoverPaths, requireMutatingAdmin, async (req, res) => {
   const { accessToken, metaAppId, metaAppSecret } = req.body || {};
   if (!accessToken || !String(accessToken).trim()) {
     return sendJsonResponse(res, "error", "Paste a Meta User or Page Access Token first.", null, 400);
@@ -3150,8 +3162,8 @@ router.post(socialVerifyPaths, requireMutatingAuth, async (req, res) => {
   }
 });
 
-// 6. Disconnect Meta Accounts
-router.post(socialDisconnectPaths, requireMutatingAuth, async (req, res) => {
+// 6. Disconnect Meta Accounts (Admin Only)
+router.post(socialDisconnectPaths, requireMutatingAdmin, async (req, res) => {
   try {
     const current = await loadSocialConfig();
     const cleared = await saveSocialConfig({

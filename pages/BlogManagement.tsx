@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { SocialPlatform, SocialPost } from '../types';
+import { SocialPlatform, SocialPost, User } from '../types';
 import { generateBlogPostDraft } from '../services/geminiService';
 import { api } from '../services/api';
 
@@ -204,7 +204,12 @@ function buildLiveSocialCaption(
     .join('\n');
 }
 
-const BlogManagement: React.FC = () => {
+interface BlogManagementProps {
+  currentUser?: User | null;
+}
+
+const BlogManagement: React.FC<BlogManagementProps> = ({ currentUser }) => {
+  const isAdmin = currentUser?.role === 'Admin';
   const [activeChannel, setActiveChannel] = useState<'blog' | 'instagram' | 'facebook'>('blog');
 
   const [blogs, setBlogs] = useState<any[]>([]);
@@ -1309,63 +1314,67 @@ const BlogManagement: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center flex-wrap">
-          <button
-            onClick={() => setShowAutomationPanel((prev) => !prev)}
-            className={`h-10 px-4 rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap border transition ${
-              showAutomationPanel
-                ? 'bg-[#4e45e1]/12 border-[#4e45e1]/30 text-[var(--apple-blue)]'
-                : 'apple-secondary-btn border-transparent'
-            }`}
-          >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                automationConfig.enabled ? 'bg-[#28CD41]' : 'bg-[var(--apple-text-tertiary)]/50'
-              }`}
-            />
-            <i className="fas fa-bolt text-[var(--apple-blue)] text-xs shrink-0"></i>
-            <span>Content Automation</span>
-          </button>
+          {isAdmin && (
+            <>
+              <button
+                onClick={() => setShowAutomationPanel((prev) => !prev)}
+                className={`h-10 px-4 rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap border transition ${
+                  showAutomationPanel
+                    ? 'bg-[#4e45e1]/12 border-[#4e45e1]/30 text-[var(--apple-blue)]'
+                    : 'apple-secondary-btn border-transparent'
+                }`}
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    automationConfig.enabled ? 'bg-[#28CD41]' : 'bg-[var(--apple-text-tertiary)]/50'
+                  }`}
+                />
+                <i className="fas fa-bolt text-[var(--apple-blue)] text-xs shrink-0"></i>
+                <span>Content Automation</span>
+              </button>
 
-          <button
-            onClick={() => {
-              setSocialModalNotice(null);
-              setShowSocialConfigModal(true);
-            }}
-            className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
-          >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                (socialConfig.facebookPageId && socialConfig.facebookAccessToken) ||
-                (socialConfig.instagramAccountId && socialConfig.instagramAccessToken) ||
-                socialConfig.webhookUrl
-                  ? 'bg-[#28CD41]'
-                  : 'bg-[#FF9500]'
-              }`}
-            />
-            <span className="inline-flex items-center -space-x-1">
-              <span className="w-4 h-4 rounded-full bg-gradient-to-tr from-[#F58529] via-[#DD2A7B] to-[#8134AF] text-white flex items-center justify-center">
-                <InstagramIcon className="w-2.5 h-2.5" />
-              </span>
-              <span className="w-4 h-4 rounded-full bg-[#1877F2] text-white flex items-center justify-center">
-                <FacebookIcon className="w-2.5 h-2.5" />
-              </span>
-            </span>
-            <span>
-              {(socialConfig.facebookPageId && socialConfig.facebookAccessToken) ||
-              (socialConfig.instagramAccountId && socialConfig.instagramAccessToken)
-                ? 'IG & FB Connected'
-                : 'Connect IG & FB'}
-            </span>
-          </button>
+              <button
+                onClick={() => {
+                  setSocialModalNotice(null);
+                  setShowSocialConfigModal(true);
+                }}
+                className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
+              >
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    (socialConfig.facebookPageId && socialConfig.facebookAccessToken) ||
+                    (socialConfig.instagramAccountId && socialConfig.instagramAccessToken) ||
+                    socialConfig.webhookUrl
+                      ? 'bg-[#28CD41]'
+                      : 'bg-[#FF9500]'
+                  }`}
+                />
+                <span className="inline-flex items-center -space-x-1">
+                  <span className="w-4 h-4 rounded-full bg-gradient-to-tr from-[#F58529] via-[#DD2A7B] to-[#8134AF] text-white flex items-center justify-center">
+                    <InstagramIcon className="w-2.5 h-2.5" />
+                  </span>
+                  <span className="w-4 h-4 rounded-full bg-[#1877F2] text-white flex items-center justify-center">
+                    <FacebookIcon className="w-2.5 h-2.5" />
+                  </span>
+                </span>
+                <span>
+                  {(socialConfig.facebookPageId && socialConfig.facebookAccessToken) ||
+                  (socialConfig.instagramAccountId && socialConfig.instagramAccessToken)
+                    ? 'IG & FB Connected'
+                    : 'Connect IG & FB'}
+                </span>
+              </button>
 
-          <button
-            onClick={() => setShowConfigModal(true)}
-            className="h-10 px-3.5 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
-            title="Blog Settings"
-          >
-            <i className="fas fa-sliders text-[var(--apple-blue)] text-xs shrink-0"></i>
-            <span>Blog Settings</span>
-          </button>
+              <button
+                onClick={() => setShowConfigModal(true)}
+                className="h-10 px-3.5 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
+                title="Blog Settings"
+              >
+                <i className="fas fa-sliders text-[var(--apple-blue)] text-xs shrink-0"></i>
+                <span>Blog Settings</span>
+              </button>
+            </>
+          )}
 
           {!isComposing && (
             <button
@@ -1684,8 +1693,12 @@ const BlogManagement: React.FC = () => {
         </div>
 
         <div
-          onClick={() => setShowSocialConfigModal(true)}
-          className="apple-card p-4 flex items-center justify-between cursor-pointer hover:border-[var(--apple-blue)] transition-all"
+          onClick={() => {
+            if (isAdmin) setShowSocialConfigModal(true);
+          }}
+          className={`apple-card p-4 flex items-center justify-between transition-all ${
+            isAdmin ? 'cursor-pointer hover:border-[var(--apple-blue)]' : ''
+          }`}
         >
           <div className="min-w-0 pr-2">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-[var(--apple-text-tertiary)]">
@@ -1698,9 +1711,11 @@ const BlogManagement: React.FC = () => {
                 ? 'Live API Connected'
                 : 'Auto-Populate Active'}
             </p>
-            <p className="text-[11px] text-[var(--apple-blue)] font-medium mt-0.5">
-              Configure Meta API / Webhook →
-            </p>
+            {isAdmin && (
+              <p className="text-[11px] text-[var(--apple-blue)] font-medium mt-0.5">
+                Configure Meta API / Webhook →
+              </p>
+            )}
           </div>
           <div className="w-10 h-10 rounded-[12px] bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158] flex items-center justify-center shrink-0">
             <i className="fas fa-share-nodes text-sm"></i>
@@ -2598,13 +2613,15 @@ const BlogManagement: React.FC = () => {
                       </p>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setShowSocialConfigModal(true)}
-                    className="px-3 py-1.5 apple-secondary-btn rounded-[9px] text-[11.5px] font-semibold shrink-0 self-start sm:self-center"
-                  >
-                    Pacing Settings ({socialConfig.socialMinIntervalMinutes || 30}m)
-                  </button>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => setShowSocialConfigModal(true)}
+                      className="px-3 py-1.5 apple-secondary-btn rounded-[9px] text-[11.5px] font-semibold shrink-0 self-start sm:self-center"
+                    >
+                      Pacing Settings ({socialConfig.socialMinIntervalMinutes || 30}m)
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -3087,7 +3104,7 @@ const BlogManagement: React.FC = () => {
       )}
 
       {/* Instagram & Facebook Automation & API Credentials Modal */}
-      {showSocialConfigModal && (
+      {isAdmin && showSocialConfigModal && (
         <div className="fixed inset-0 z-[106] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
           <div className="apple-glass rounded-[24px] w-full max-w-2xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-6 py-4 border-b border-[var(--apple-border)] flex items-center justify-between">
@@ -3698,8 +3715,8 @@ const BlogManagement: React.FC = () => {
         </div>
       )}
 
-      {/* Blog Settings & Configuration Modal (Admin) */}
-      {showConfigModal && (
+      {/* Blog Settings & Configuration Modal (Admin Only) */}
+      {isAdmin && showConfigModal && (
         <div className="fixed inset-0 z-[105] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
           <div className="apple-glass rounded-[24px] w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-6 py-4 border-b border-[var(--apple-border)] flex items-center justify-between">

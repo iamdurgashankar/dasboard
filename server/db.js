@@ -70,6 +70,28 @@ function getDefaultSettings() {
       webhookIntakeEnabled: true,
       slaHours: 24,
     },
+    access_email_config: {
+      adminEmail:
+        process.env.ADMIN_ALERT_EMAIL ||
+        process.env.ADMIN_EMAIL ||
+        "admin@devinquire.com",
+      fromName:
+        process.env.ACCESS_MAIL_FROM_NAME || "DevInquire Access Control",
+      fromEmail:
+        process.env.ACCESS_MAIL_FROM_ADDRESS ||
+        process.env.ACCESS_SMTP_USER ||
+        "admin@devinquire.com",
+      smtpHost: process.env.ACCESS_SMTP_HOST || "smtp.hostinger.com",
+      smtpPort: parseInt(process.env.ACCESS_SMTP_PORT || "465", 10),
+      smtpUser: process.env.ACCESS_SMTP_USER || "admin@devinquire.com",
+      smtpPass: process.env.ACCESS_SMTP_PASS || "",
+      web3FormsEnabled: true,
+      web3FormsKey:
+        process.env.ACCESS_WEB3FORMS_KEY ||
+        process.env.WEB3FORMS_ACCESS_KEY ||
+        "803e30e6-5c54-4cae-9406-8d13bcf3d8e9",
+      bccAdminOnDecision: true,
+    },
     blog_config: {
       siteUrl: process.env.MAIN_SITE_URL || "https://devinquire.com",
       defaultAuthor: "DevInquire Editorial",
@@ -131,6 +153,10 @@ function getEmbeddedStore() {
         embeddedData.settings.contacts_config = {
           ...defaults.contacts_config,
           ...(embeddedData.settings.contacts_config || {}),
+        };
+        embeddedData.settings.access_email_config = {
+          ...defaults.access_email_config,
+          ...(embeddedData.settings.access_email_config || {}),
         };
         embeddedData.settings.blog_config = {
           ...defaults.blog_config,
@@ -1139,8 +1165,10 @@ export const db = {
     const prev = store.settings[key] || {};
     const cleanedPatch = { ...(patch || {}) };
     if (
-      key === "contacts_config" &&
-      (cleanedPatch.smtpPass === undefined || cleanedPatch.smtpPass === "********") &&
+      (key === "contacts_config" || key === "access_email_config") &&
+      (cleanedPatch.smtpPass === undefined ||
+        cleanedPatch.smtpPass === "" ||
+        cleanedPatch.smtpPass === "********") &&
       prev.smtpPass
     ) {
       cleanedPatch.smtpPass = prev.smtpPass;

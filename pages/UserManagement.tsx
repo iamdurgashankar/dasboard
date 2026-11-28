@@ -66,7 +66,12 @@ const RoleBadge: React.FC<{ role: UserRole }> = ({ role }) => {
   );
 };
 
-const UserManagement: React.FC = () => {
+interface UserManagementProps {
+  currentUser?: User | null;
+}
+
+const UserManagement: React.FC<UserManagementProps> = ({ currentUser }) => {
+  const isAdmin = currentUser?.role === 'Admin';
   const location = useLocation();
   const [users, setUsers] = useState<User[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -99,11 +104,11 @@ const UserManagement: React.FC = () => {
   } | null>(null);
   const [emailConfig, setEmailConfig] = useState<EmailSettingsState>({
     adminEmail: 'admin@devinquire.com',
-    fromName: 'DevInquire',
+    fromName: 'DevInquire Access Control',
     fromEmail: 'admin@devinquire.com',
     smtpHost: 'smtp.hostinger.com',
     smtpPort: 465,
-    smtpUser: '',
+    smtpUser: 'admin@devinquire.com',
     smtpPass: '',
     hasSmtpPass: false,
     smtpConfigured: false,
@@ -137,10 +142,12 @@ const UserManagement: React.FC = () => {
 
   useEffect(() => {
     fetchUsers();
-    fetchEmailConfig();
+    if (isAdmin) {
+      fetchEmailConfig();
+    }
     const interval = setInterval(() => fetchUsers(true), 20000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isAdmin]);
 
   const fetchUsers = async (silent: boolean = false) => {
     if (!silent) setIsLoading(true);
@@ -416,28 +423,30 @@ const UserManagement: React.FC = () => {
             <p className="text-[12px] font-semibold uppercase tracking-wider text-[var(--apple-blue)]">
               Role-Based Access Control &amp; Email Approvals
             </p>
-            <span
-              onClick={() => {
-                setEmailModalNotice(null);
-                setShowEmailModal(true);
-              }}
-              className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer ${
-                emailConfig.smtpConfigured
-                  ? 'bg-[#28CD41]/12 text-[#1E8E3E] dark:text-[#30D158]'
-                  : 'bg-[#FF9500]/15 text-[#D97706]'
-              }`}
-            >
+            {isAdmin && (
               <span
-                className={`w-1.5 h-1.5 rounded-full ${
-                  emailConfig.smtpConfigured ? 'bg-[#28CD41]' : 'bg-[#FF9500]'
+                onClick={() => {
+                  setEmailModalNotice(null);
+                  setShowEmailModal(true);
+                }}
+                className={`px-2.5 py-0.5 rounded-full text-[10.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer ${
+                  emailConfig.smtpConfigured
+                    ? 'bg-[#28CD41]/12 text-[#1E8E3E] dark:text-[#30D158]'
+                    : 'bg-[#FF9500]/15 text-[#D97706]'
                 }`}
-              ></span>
-              <span>
-                {emailConfig.smtpConfigured
-                  ? 'SMTP Active (Admin + Applicant Emails)'
-                  : 'Admin Relay Active • Set SMTP for Applicant Emails'}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    emailConfig.smtpConfigured ? 'bg-[#28CD41]' : 'bg-[#FF9500]'
+                  }`}
+                ></span>
+                <span>
+                  {emailConfig.smtpConfigured
+                    ? 'Access SMTP Active (admin@devinquire.com)'
+                    : 'Admin Relay Active • Set Access SMTP'}
+                </span>
               </span>
-            </span>
+            )}
           </div>
           <h1 className="text-[28px] sm:text-[32px] font-semibold tracking-tight text-[var(--apple-text-primary)] leading-tight">
             Access &amp; Users
@@ -447,28 +456,30 @@ const UserManagement: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center flex-wrap">
-          <button
-            type="button"
-            onClick={() => {
-              setEmailModalNotice(null);
-              fetchEmailConfig();
-              setShowEmailModal(true);
-            }}
-            className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
-          >
-            <i className="fas fa-envelope-circle-check text-[var(--apple-blue)] text-xs"></i>
-            <span>Email Notifications</span>
-          </button>
+        {isAdmin && (
+          <div className="flex items-center gap-2.5 shrink-0 self-start md:self-center flex-wrap">
+            <button
+              type="button"
+              onClick={() => {
+                setEmailModalNotice(null);
+                fetchEmailConfig();
+                setShowEmailModal(true);
+              }}
+              className="h-10 px-4 apple-secondary-btn rounded-[12px] text-[13px] font-medium inline-flex items-center justify-center gap-2 whitespace-nowrap"
+            >
+              <i className="fas fa-envelope-circle-check text-[var(--apple-blue)] text-xs"></i>
+              <span>Access Email Settings</span>
+            </button>
 
-          <button
-            onClick={() => openModal('add')}
-            className="h-10 px-4 apple-pill-btn rounded-[12px] text-[13px] font-semibold inline-flex items-center justify-center gap-2 shrink-0 whitespace-nowrap"
-          >
-            <i className="fas fa-plus text-xs badge-white shrink-0"></i>
-            <span>Provision User</span>
-          </button>
-        </div>
+            <button
+              onClick={() => openModal('add')}
+              className="h-10 px-4 apple-pill-btn rounded-[12px] text-[13px] font-semibold inline-flex items-center justify-center gap-2 shrink-0 whitespace-nowrap"
+            >
+              <i className="fas fa-plus text-xs badge-white shrink-0"></i>
+              <span>Provision User</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {toast && (
@@ -487,7 +498,7 @@ const UserManagement: React.FC = () => {
             ></i>
             <span>{toast.text}</span>
           </div>
-          {toast.type === 'warning' && !emailConfig.smtpConfigured && (
+          {isAdmin && toast.type === 'warning' && !emailConfig.smtpConfigured && (
             <button
               type="button"
               onClick={() => {
@@ -794,17 +805,17 @@ const UserManagement: React.FC = () => {
         </div>
       )}
 
-      {/* Email Notifications Settings Modal (SMTP + Admin Alert Recipient) */}
-      {showEmailModal && (
+      {/* Access Email Settings Modal (Admin Only — Independent from Client Inquiry Mail Settings) */}
+      {isAdmin && showEmailModal && (
         <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/40 backdrop-blur-md animate-in fade-in duration-200">
           <div className="apple-glass rounded-[24px] w-full max-w-xl overflow-hidden animate-in zoom-in-95 duration-200">
             <div className="px-6 py-4 border-b border-[var(--apple-border)] flex items-center justify-between">
               <div>
                 <h3 className="text-[16px] font-semibold text-[var(--apple-text-primary)]">
-                  Account Signup &amp; Approval Email Settings
+                  Access &amp; User Account Email Settings
                 </h3>
                 <p className="text-[12px] text-[var(--apple-text-secondary)]">
-                  Configure how admin alerts and applicant approval/rejection emails are delivered.
+                  Dedicated mailbox setup for signup alerts (<code>admin@devinquire.com</code>) &amp; approval/rejection emails — completely separate from Client Inquiry mail settings.
                 </p>
               </div>
               <button

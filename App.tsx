@@ -192,24 +192,24 @@ const AppContent = () => {
 
             <Route path="/blogs" element={
               <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.BLOGS}>
-                <BlogManagement />
+                <BlogManagement currentUser={currentUser} />
               </ProtectedRoute>
             } />
             <Route path="/blog" element={
               <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.BLOGS}>
-                <BlogManagement />
+                <BlogManagement currentUser={currentUser} />
               </ProtectedRoute>
             } />
 
             <Route path="/users" element={
               <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.USERS}>
-                <UserManagement />
+                <UserManagement currentUser={currentUser} />
               </ProtectedRoute>
             } />
 
             <Route path="/contacts" element={
               <ProtectedRoute role={currentUser.role} allowedTabs={allowedTabs} tab={DashboardTab.CONTACTS}>
-                <ContactSubmissions />
+                <ContactSubmissions currentUser={currentUser} />
               </ProtectedRoute>
             } />
 

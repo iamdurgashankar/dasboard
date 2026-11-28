@@ -15,6 +15,8 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_ADMIN_EMAIL = 'admin@devinquire.com';
 const DEFAULT_WEB3FORMS_KEY = '803e30e6-5c54-4cae-9406-8d13bcf3d8e9';
+const ACCESS_MAIL_SETTING_KEY = 'access_email_config';
+const ACCESS_MAIL_LOGS_KEY = 'access_email_dispatch_logs';
 
 function escapeHtml(text) {
     return String(text || '')
@@ -25,12 +27,10 @@ function escapeHtml(text) {
         .replace(/'/g, '&#039;');
 }
 
-function readMainSiteEnvFallback() {
+function readDashboardEnvFallback() {
     const candidates = [
         path.join(__dirname, '.env'),
-        path.join(__dirname, '../.env'),
-        path.join(__dirname, '../../devinquire.com/.env'),
-        path.join(__dirname, '../../devinquire.com/api/.env')
+        path.join(__dirname, '../.env')
     ];
     const merged = {};
     for (const p of candidates) {
@@ -46,22 +46,22 @@ function readMainSiteEnvFallback() {
 }
 
 export async function loadAccountMailConfig() {
-    let sqlContactsCfg = {};
+    let sqlAccessCfg = {};
     try {
         const res = await db.query(
-            "SELECT setting_value FROM system_settings WHERE setting_key = 'contacts_config' LIMIT 1"
+            "SELECT setting_value FROM system_settings WHERE setting_key = 'access_email_config' LIMIT 1"
         );
         const raw = res.rows?.[0]?.setting_value;
         if (raw) {
-            sqlContactsCfg = typeof raw === 'string' ? JSON.parse(raw) : raw;
+            sqlAccessCfg = typeof raw === 'string' ? JSON.parse(raw) : raw;
         }
     } catch {
         // ignore if table not initialized yet
     }
 
-    const memCfg = db.getSettings('contacts_config') || {};
-    const envFallback = readMainSiteEnvFallback();
-    const combined = { ...memCfg, ...sqlContactsCfg };
+    const memCfg = db.getSettings(ACCESS_MAIL_SETTING_KEY) || {};
+    const envFallback = readDashboardEnvFallback();
+    const combined = { ...memCfg, ...sqlAccessCfg };
 
     const pick = (...vals) => {
         for (const v of vals) {
@@ -80,49 +80,52 @@ export async function loadAccountMailConfig() {
     };
 
     const smtpHost =
-        pick(combined.smtpHost, process.env.SMTP_HOST, envFallback.SMTP_HOST) ||
-        'smtp.hostinger.com';
+        pick(
+            combined.smtpHost,
+            process.env.ACCESS_SMTP_HOST,
+            envFallback.ACCESS_SMTP_HOST
+        ) || 'smtp.hostinger.com';
     const smtpPort = Number(
-        pick(combined.smtpPort, process.env.SMTP_PORT, envFallback.SMTP_PORT) ||
-            (smtpHost.includes('hostinger') ? 465 : 587)
+        pick(
+            combined.smtpPort,
+            process.env.ACCESS_SMTP_PORT,
+            envFallback.ACCESS_SMTP_PORT
+        ) || (smtpHost.includes('hostinger') ? 465 : 587)
     );
     const smtpUser = pick(
         combined.smtpUser,
-        process.env.SMTP_USERNAME,
-        process.env.SMTP_USER,
-        envFallback.SMTP_USERNAME,
-        envFallback.SMTP_USER
-    );
+        process.env.ACCESS_SMTP_USER,
+        envFallback.ACCESS_SMTP_USER
+    ) || DEFAULT_ADMIN_EMAIL;
     const smtpPass = pick(
         combined.smtpPass,
-        process.env.SMTP_PASSWORD,
-        process.env.SMTP_PASS,
-        envFallback.SMTP_PASSWORD,
-        envFallback.SMTP_PASS
+        process.env.ACCESS_SMTP_PASS,
+        envFallback.ACCESS_SMTP_PASS
     );
 
-    const adminEmail = String(
-        combined.adminAlertEmail ||
-            process.env.ADMIN_ALERT_EMAIL ||
-            process.env.ADMIN_EMAIL ||
-            DEFAULT_ADMIN_EMAIL
-    )
-        .trim()
-        .toLowerCase();
+    const adminEmail = (
+        pick(
+            combined.adminEmail,
+            combined.adminAlertEmail,
+            process.env.ADMIN_ALERT_EMAIL,
+            process.env.ADMIN_EMAIL,
+            envFallback.ADMIN_ALERT_EMAIL,
+            envFallback.ADMIN_EMAIL
+        ) || DEFAULT_ADMIN_EMAIL
+    ).toLowerCase();
 
     const fromName =
-        combined.fromName ||
-        process.env.MAIL_FROM_NAME ||
-        envFallback.MAIL_FROM_NAME ||
-        'DevInquire';
+        pick(
+            combined.fromName,
+            process.env.ACCESS_MAIL_FROM_NAME,
+            envFallback.ACCESS_MAIL_FROM_NAME
+        ) || 'DevInquire Access Control';
 
-    // Use authenticated smtpUser as From address when domains match or when fromEmail is a placeholder
-    const configuredFrom = String(
-        combined.fromEmail ||
-            process.env.MAIL_FROM_ADDRESS ||
-            envFallback.MAIL_FROM_ADDRESS ||
-            ''
-    ).trim();
+    const configuredFrom = pick(
+        combined.fromEmail,
+        process.env.ACCESS_MAIL_FROM_ADDRESS,
+        envFallback.ACCESS_MAIL_FROM_ADDRESS
+    );
     const fromEmail =
         smtpUser && (!configuredFrom || configuredFrom === 'noreply@devinquire.com')
             ? smtpUser
@@ -130,12 +133,14 @@ export async function loadAccountMailConfig() {
 
     const web3FormsEnabled =
         combined.web3FormsEnabled !== undefined ? Boolean(combined.web3FormsEnabled) : true;
-    const web3FormsKey = String(
-        combined.web3FormsKey ||
-            process.env.WEB3FORMS_ACCESS_KEY ||
-            envFallback.WEB3FORMS_ACCESS_KEY ||
-            DEFAULT_WEB3FORMS_KEY
-    ).trim();
+    const web3FormsKey =
+        pick(
+            combined.web3FormsKey,
+            process.env.ACCESS_WEB3FORMS_KEY,
+            envFallback.ACCESS_WEB3FORMS_KEY,
+            process.env.WEB3FORMS_ACCESS_KEY,
+            envFallback.WEB3FORMS_ACCESS_KEY
+        ) || DEFAULT_WEB3FORMS_KEY;
 
     const bccAdminOnDecision =
         combined.bccAdminOnDecision !== undefined ? Boolean(combined.bccAdminOnDecision) : true;
@@ -163,15 +168,17 @@ export async function loadAccountMailConfig() {
 }
 
 export async function saveAccountMailConfig(patch = {}) {
-    const current = db.getSettings('contacts_config') || {};
-    const preservePass =
-        patch.smtpPass !== undefined && String(patch.smtpPass).trim() !== ''
-            ? String(patch.smtpPass).trim()
-            : current.smtpPass || '';
+    const current = db.getSettings(ACCESS_MAIL_SETTING_KEY) || {};
+    const hasExplicitClearPass = patch.clearSmtpPass === true;
+    const preservePass = hasExplicitClearPass
+        ? ''
+        : patch.smtpPass !== undefined && String(patch.smtpPass).trim() !== ''
+        ? String(patch.smtpPass).trim()
+        : current.smtpPass || '';
 
-    const updated = db.updateSettings('contacts_config', {
+    const nextPatch = {
         ...current,
-        ...(patch.adminEmail !== undefined ? { adminAlertEmail: String(patch.adminEmail).trim() } : {}),
+        ...(patch.adminEmail !== undefined ? { adminEmail: String(patch.adminEmail).trim() } : {}),
         ...(patch.fromName !== undefined ? { fromName: String(patch.fromName).trim() } : {}),
         ...(patch.fromEmail !== undefined ? { fromEmail: String(patch.fromEmail).trim() } : {}),
         ...(patch.smtpHost !== undefined ? { smtpHost: String(patch.smtpHost).trim() } : {}),
@@ -184,23 +191,22 @@ export async function saveAccountMailConfig(patch = {}) {
         ...(patch.bccAdminOnDecision !== undefined
             ? { bccAdminOnDecision: Boolean(patch.bccAdminOnDecision) }
             : {})
-    });
+    };
 
-    try {
-        await db.query(
-            `INSERT INTO system_settings (setting_key, setting_value)
-             VALUES ($1, $2::jsonb)
-             ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value`,
-            ['contacts_config', JSON.stringify(updated)]
-        );
-    } catch {
-        try {
-            await db.query(
-                'INSERT INTO system_settings (setting_key, setting_value) VALUES ($1, $2) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
-                ['contacts_config', JSON.stringify(updated)]
-            );
-        } catch {
-            // embedded store already saved via db.updateSettings
+    await db.updateSettingsAsync(ACCESS_MAIL_SETTING_KEY, nextPatch);
+    if (hasExplicitClearPass) {
+        // Ensure empty password persists when explicitly cleared
+        const storeCfg = db.getSettings(ACCESS_MAIL_SETTING_KEY);
+        if (storeCfg && storeCfg.smtpPass) {
+            storeCfg.smtpPass = '';
+            try {
+                await db.query(
+                    'INSERT INTO system_settings (setting_key, setting_value) VALUES ($1, $2) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)',
+                    [ACCESS_MAIL_SETTING_KEY, JSON.stringify({ ...storeCfg, smtpPass: '' })]
+                );
+            } catch {
+                // ignore
+            }
         }
     }
 
@@ -229,7 +235,7 @@ function createSmtpTransporter(cfg) {
 
 async function recordEmailLog(entry) {
     try {
-        const current = db.getSettings('email_dispatch_logs') || { items: [] };
+        const current = db.getSettings(ACCESS_MAIL_LOGS_KEY) || { items: [] };
         const items = Array.isArray(current.items) ? current.items : [];
         const nextItems = [
             {
@@ -239,14 +245,14 @@ async function recordEmailLog(entry) {
             },
             ...items
         ].slice(0, 25);
-        db.updateSettings('email_dispatch_logs', { items: nextItems });
+        db.updateSettings(ACCESS_MAIL_LOGS_KEY, { items: nextItems });
     } catch {
         // non-fatal
     }
 }
 
 export function getRecentEmailLogs() {
-    const current = db.getSettings('email_dispatch_logs') || { items: [] };
+    const current = db.getSettings(ACCESS_MAIL_LOGS_KEY) || { items: [] };
     return Array.isArray(current.items) ? current.items : [];
 }
 
