@@ -852,6 +852,10 @@ export const api = {
         updateConfig: (data: any) => api.fetch('/contacts/config', {
             method: 'POST',
             body: JSON.stringify(data)
+        }),
+        testSmtp: (data: any) => api.fetch('/contacts/test-smtp', {
+            method: 'POST',
+            body: JSON.stringify(data)
         })
     },
 

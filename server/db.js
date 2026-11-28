@@ -50,10 +50,13 @@ function getDefaultSettings() {
     contacts_config: {
       recipientEmail: process.env.CONTACT_EMAIL || "contact@devinquire.com",
       fromName: process.env.MAIL_FROM_NAME || "DevInquire",
-      fromEmail: process.env.MAIL_FROM_ADDRESS || "noreply@devinquire.com",
-      smtpHost: process.env.SMTP_HOST || "smtp.gmail.com",
-      smtpPort: parseInt(process.env.SMTP_PORT || "587", 10),
-      smtpUser: process.env.SMTP_USERNAME || "",
+      fromEmail:
+        process.env.MAIL_FROM_ADDRESS ||
+        process.env.SMTP_USERNAME ||
+        "contact@devinquire.com",
+      smtpHost: process.env.SMTP_HOST || "smtp.hostinger.com",
+      smtpPort: parseInt(process.env.SMTP_PORT || "465", 10),
+      smtpUser: process.env.SMTP_USERNAME || "contact@devinquire.com",
       smtpPass: process.env.SMTP_PASSWORD || "",
       web3FormsEnabled: true,
       web3FormsKey:
@@ -1131,10 +1134,19 @@ export const db = {
     const store = getEmbeddedStore();
     const defaults = getDefaultSettings();
     if (!store.settings) store.settings = defaults;
+    const prev = store.settings[key] || {};
+    const cleanedPatch = { ...(patch || {}) };
+    if (
+      key === "contacts_config" &&
+      (cleanedPatch.smtpPass === undefined || cleanedPatch.smtpPass === "********") &&
+      prev.smtpPass
+    ) {
+      cleanedPatch.smtpPass = prev.smtpPass;
+    }
     store.settings[key] = {
       ...(defaults[key] || {}),
-      ...(store.settings[key] || {}),
-      ...(patch || {}),
+      ...prev,
+      ...cleanedPatch,
     };
     saveEmbeddedStore();
 
@@ -1158,6 +1170,29 @@ export const db = {
     }
 
     return store.settings[key];
+  },
+
+  async updateSettingsAsync(key, patch) {
+    const nextVal = this.updateSettings(key, patch);
+    if (!useEmbeddedStore) {
+      const jsonVal = JSON.stringify(nextVal);
+      if (useMySQL && mysqlPool) {
+        await mysqlPool
+          .query(
+            "INSERT INTO system_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)",
+            [key, jsonVal],
+          )
+          .catch(() => {});
+      } else if (pgPool) {
+        await pgPool
+          .query(
+            "INSERT INTO system_settings (setting_key, setting_value) VALUES ($1, $2::jsonb) ON CONFLICT (setting_key) DO UPDATE SET setting_value = EXCLUDED.setting_value",
+            [key, jsonVal],
+          )
+          .catch(() => {});
+      }
+    }
+    return nextVal;
   },
 
   async query(text, params = []) {
@@ -1275,16 +1310,18 @@ export const db = {
 
       const duration = Date.now() - start;
       const isProd = process.env.NODE_ENV === "production";
-      console.error(
-        "[DB][MySQL] Query execution error",
-        JSON.stringify({
-          ts: new Date().toISOString(),
-          original: text.trim().substring(0, 200),
-          duration,
-          code: err.code,
-          message: err.message,
-        }),
-      );
+      if (err.code !== "ER_NO_SUCH_TABLE") {
+        console.error(
+          "[DB][MySQL] Query execution error",
+          JSON.stringify({
+            ts: new Date().toISOString(),
+            original: text.trim().substring(0, 200),
+            duration,
+            code: err.code,
+            message: err.message,
+          }),
+        );
+      }
       const sanitized = new Error(
         isProd
           ? "Database query failed."

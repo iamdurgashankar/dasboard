@@ -23,10 +23,10 @@ interface InquiryConfig {
 const DEFAULT_CONFIG: InquiryConfig = {
   recipientEmail: 'contact@devinquire.com',
   fromName: 'DevInquire',
-  fromEmail: 'noreply@devinquire.com',
-  smtpHost: 'smtp.gmail.com',
-  smtpPort: 587,
-  smtpUser: '',
+  fromEmail: 'contact@devinquire.com',
+  smtpHost: 'smtp.hostinger.com',
+  smtpPort: 465,
+  smtpUser: 'contact@devinquire.com',
   smtpPass: '',
   web3FormsEnabled: true,
   web3FormsKey: '803e30e6-5c54-4cae-9406-8d13bcf3d8e9',
@@ -117,6 +117,11 @@ const ContactSubmissions: React.FC = () => {
   const [showConfigModal, setShowConfigModal] = useState(false);
   const [config, setConfig] = useState<InquiryConfig>(DEFAULT_CONFIG);
   const [isSavingConfig, setIsSavingConfig] = useState(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState(false);
+  const [smtpTestStatus, setSmtpTestStatus] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   const [lastSyncedAt, setLastSyncedAt] = useState<string>('Just now');
 
@@ -394,17 +399,51 @@ const ContactSubmissions: React.FC = () => {
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingConfig(true);
+    setSmtpTestStatus(null);
     try {
       const res = await api.contacts.updateConfig(config);
       if (res.status === 'success' && res.data) {
         setConfig({ ...DEFAULT_CONFIG, ...res.data });
       }
       setShowConfigModal(false);
-      showToast('Client Inquiry configuration saved.');
-    } catch (err) {
-      console.error('Save config error:', err);
+      showToast('Live SMTP & Client Inquiry configuration saved.');
+    } catch (err: any) {
+      setSmtpTestStatus({
+        type: 'error',
+        text: err?.message || 'Failed to save configuration.',
+      });
     } finally {
       setIsSavingConfig(false);
+    }
+  };
+
+  const handleTestSmtp = async () => {
+    setIsTestingSmtp(true);
+    setSmtpTestStatus(null);
+    try {
+      const res = await api.contacts.testSmtp(config);
+      if (res.status === 'success') {
+        if (res.data) {
+          setConfig({ ...DEFAULT_CONFIG, ...res.data });
+        }
+        setSmtpTestStatus({
+          type: 'success',
+          text: res.message || `Live Hostinger SMTP verified! Test email delivered to ${config.recipientEmail}.`,
+        });
+        showToast(res.message || 'Live Hostinger SMTP verified & saved!');
+      } else {
+        setSmtpTestStatus({
+          type: 'error',
+          text: res.message || 'SMTP connection test failed.',
+        });
+      }
+    } catch (err: any) {
+      setSmtpTestStatus({
+        type: 'error',
+        text: err?.message || 'SMTP connection failed. Verify your Hostinger mailbox password.',
+      });
+    } finally {
+      setIsTestingSmtp(false);
     }
   };
 
@@ -1615,24 +1654,40 @@ const ContactSubmissions: React.FC = () => {
                 </div>
               </div>
 
-              {/* Outbound Mail / SMTP & Web3Forms Settings */}
+              {/* Outbound Mail / Hostinger SMTP & Web3Forms Settings */}
               <div className="apple-subcard p-4 rounded-[14px] space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <p className="text-[13px] font-semibold text-[var(--apple-text-primary)]">
-                      Mail Delivery Configuration (SMTP &amp; Web3Forms Relay)
+                      Live Hostinger SMTP Configuration
                     </p>
                     <p className="text-[11px] text-[var(--apple-text-secondary)]">
                       {config.smtpUser && config.smtpPass
-                        ? `Active: Custom SMTP (${config.smtpHost}:${config.smtpPort})`
-                        : config.web3FormsEnabled
-                        ? 'Active: Web3Forms Relay (Fallback active until SMTP credentials are added)'
-                        : 'Ledger Only (Configure SMTP or enable Web3Forms for email alerts)'}
+                        ? `Active: Hostinger/Custom SMTP (${config.smtpHost}:${config.smtpPort})`
+                        : 'Enter your contact@devinquire.com mailbox password below to activate live SMTP'}
                     </p>
                   </div>
-                  <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]">
-                    {config.smtpUser && config.smtpPass ? 'SMTP Ready' : 'Web3Forms Active'}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setConfig({
+                          ...config,
+                          smtpHost: 'smtp.hostinger.com',
+                          smtpPort: 465,
+                          smtpUser: config.smtpUser || 'contact@devinquire.com',
+                          fromEmail: 'contact@devinquire.com',
+                          recipientEmail: config.recipientEmail || 'contact@devinquire.com',
+                        })
+                      }
+                      className="px-2.5 py-1 rounded-full text-[10.5px] font-semibold bg-[#4e45e1]/12 text-[var(--apple-blue)] hover:bg-[#4e45e1]/20 transition-colors"
+                    >
+                      Apply Hostinger Preset
+                    </button>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-semibold bg-[#28CD41]/12 text-[#248A3D] dark:text-[#30D158]">
+                      {config.smtpUser && config.smtpPass ? 'SMTP Ready' : 'Password Needed'}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1644,21 +1699,21 @@ const ContactSubmissions: React.FC = () => {
                       type="text"
                       value={config.smtpHost}
                       onChange={(e) => setConfig({ ...config, smtpHost: e.target.value })}
-                      placeholder="smtp.gmail.com"
+                      placeholder="smtp.hostinger.com"
                       className="w-full apple-input px-3 py-1.5 text-[12px]"
                     />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
-                      SMTP Port
+                      SMTP Port (465 SSL)
                     </label>
                     <input
                       type="number"
                       value={config.smtpPort}
                       onChange={(e) =>
-                        setConfig({ ...config, smtpPort: Number(e.target.value) || 587 })
+                        setConfig({ ...config, smtpPort: Number(e.target.value) || 465 })
                       }
-                      placeholder="587"
+                      placeholder="465"
                       className="w-full apple-input px-3 py-1.5 text-[12px]"
                     />
                   </div>
@@ -1667,29 +1722,94 @@ const ContactSubmissions: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
-                      SMTP Username (optional)
+                      Mailbox / SMTP Username
                     </label>
                     <input
-                      type="text"
+                      type="email"
                       value={config.smtpUser}
-                      onChange={(e) => setConfig({ ...config, smtpUser: e.target.value })}
+                      onChange={(e) =>
+                        setConfig({
+                          ...config,
+                          smtpUser: e.target.value,
+                          fromEmail: e.target.value || config.fromEmail,
+                        })
+                      }
                       placeholder="contact@devinquire.com"
                       className="w-full apple-input px-3 py-1.5 text-[12px]"
                     />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
-                      SMTP App Password (optional)
+                      Hostinger Mailbox Password
                     </label>
                     <input
                       type="password"
                       value={config.smtpPass}
                       onChange={(e) => setConfig({ ...config, smtpPass: e.target.value })}
-                      placeholder="••••••••••••"
+                      placeholder="Enter contact@devinquire.com password"
                       className="w-full apple-input px-3 py-1.5 text-[12px]"
                     />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                      Sender Name (From Name)
+                    </label>
+                    <input
+                      type="text"
+                      value={config.fromName}
+                      onChange={(e) => setConfig({ ...config, fromName: e.target.value })}
+                      placeholder="DevInquire"
+                      className="w-full apple-input px-3 py-1.5 text-[12px]"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-[var(--apple-text-secondary)]">
+                      From Email (Must match Hostinger Mailbox)
+                    </label>
+                    <input
+                      type="email"
+                      value={config.fromEmail}
+                      onChange={(e) => setConfig({ ...config, fromEmail: e.target.value })}
+                      placeholder="contact@devinquire.com"
+                      className="w-full apple-input px-3 py-1.5 text-[12px]"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-1 flex flex-wrap items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleTestSmtp}
+                    disabled={isTestingSmtp}
+                    className="px-3.5 py-2 rounded-[10px] bg-[#4e45e1] text-white text-[12px] font-semibold hover:opacity-95 transition-opacity disabled:opacity-50 inline-flex items-center gap-2"
+                  >
+                    <i className={`fas ${isTestingSmtp ? 'fa-spinner fa-spin' : 'fa-paper-plane'} text-[11px]`}></i>
+                    <span>{isTestingSmtp ? 'Verifying & Sending Test Email…' : 'Send Live Test Email & Save'}</span>
+                  </button>
+                  <span className="text-[11px] text-[var(--apple-text-tertiary)]">
+                    Saved securely in your live Hostinger MySQL database
+                  </span>
+                </div>
+
+                {smtpTestStatus && (
+                  <div
+                    className={`p-3 rounded-[10px] text-[12px] font-medium flex items-start gap-2 ${
+                      smtpTestStatus.type === 'success'
+                        ? 'bg-[#28CD41]/12 border border-[#28CD41]/25 text-[#248A3D] dark:text-[#30D158]'
+                        : 'bg-[#FF3B30]/10 border border-[#FF3B30]/25 text-[#FF3B30]'
+                    }`}
+                  >
+                    <i
+                      className={`fas ${
+                        smtpTestStatus.type === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation'
+                      } mt-0.5`}
+                    ></i>
+                    <span>{smtpTestStatus.text}</span>
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

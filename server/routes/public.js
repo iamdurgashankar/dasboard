@@ -9,68 +9,167 @@ import { sendJsonResponse, createNotification } from '../utils.js';
 
 const router = express.Router();
 
-async function dispatchInquiryEmail(config, inquiry) {
-    const smtpHost = config.smtpHost || process.env.SMTP_HOST || 'smtp.gmail.com';
-    const smtpPort = Number(config.smtpPort || process.env.SMTP_PORT || 587);
-    const smtpUser = config.smtpUser || process.env.SMTP_USERNAME || '';
-    const smtpPass = config.smtpPass || process.env.SMTP_PASSWORD || '';
-    const recipient = config.recipientEmail || process.env.CONTACT_EMAIL || 'contact@devinquire.com';
-    const fromEmail = config.fromEmail || process.env.SMTP_FROM || process.env.MAIL_FROM_ADDRESS || smtpUser || 'noreply@devinquire.com';
-    const fromName = config.fromName || process.env.MAIL_FROM_NAME || 'DevInquire';
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
 
-    if (!smtpUser || !smtpPass) {
+export function resolveSmtpSettings(config = {}) {
+    const smtpHost = String(config.smtpHost || process.env.SMTP_HOST || 'smtp.hostinger.com').trim();
+    const smtpPort = Number(config.smtpPort || process.env.SMTP_PORT || 465);
+    const smtpUser = String(config.smtpUser || process.env.SMTP_USERNAME || 'contact@devinquire.com').trim();
+    const smtpPass = String(config.smtpPass || process.env.SMTP_PASSWORD || '').trim();
+    const recipient = String(
+        config.recipientEmail || process.env.CONTACT_EMAIL || 'contact@devinquire.com'
+    ).trim();
+    const rawFromEmail = String(
+        config.fromEmail || process.env.SMTP_FROM || process.env.MAIL_FROM_ADDRESS || smtpUser || 'contact@devinquire.com'
+    ).trim();
+    // Hostinger SMTP requires the From address to match an owned mailbox/alias (never unowned noreply@)
+    const fromEmail =
+        smtpHost.toLowerCase().includes('hostinger') &&
+        (!rawFromEmail || rawFromEmail.toLowerCase().startsWith('noreply@')) &&
+        smtpUser
+            ? smtpUser
+            : rawFromEmail || smtpUser || 'contact@devinquire.com';
+    const fromName = String(config.fromName || process.env.MAIL_FROM_NAME || 'DevInquire').trim();
+    const secure =
+        smtpPort === 465 ||
+        (smtpPort !== 587 && process.env.SMTP_SECURE === 'true');
+
+    return {
+        smtpHost,
+        smtpPort,
+        smtpUser,
+        smtpPass,
+        recipient,
+        fromEmail,
+        fromName,
+        secure
+    };
+}
+
+export function createSmtpTransporter(config = {}) {
+    const settings = resolveSmtpSettings(config);
+    if (!settings.smtpUser || !settings.smtpPass) {
+        return { transporter: null, settings };
+    }
+    const transporter = nodemailer.createTransport({
+        host: settings.smtpHost,
+        port: settings.smtpPort,
+        secure: settings.secure,
+        auth: { user: settings.smtpUser, pass: settings.smtpPass },
+        connectionTimeout: 12000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+        tls: { rejectUnauthorized: false }
+    });
+    return { transporter, settings };
+}
+
+export async function dispatchInquiryEmail(config, inquiry) {
+    const { transporter, settings } = createSmtpTransporter(config);
+    if (!transporter) {
         return false;
     }
 
-    const transporter = nodemailer.createTransport({
-        host: smtpHost,
-        port: smtpPort,
-        secure: smtpPort === 465 || process.env.SMTP_SECURE === 'true',
-        auth: { user: smtpUser, pass: smtpPass },
-        tls: { rejectUnauthorized: false }
-    });
+    const { recipient, fromEmail, fromName } = settings;
+    const preBookingDisplay =
+        inquiry.payment_status && inquiry.payment_status !== 'none'
+            ? `${String(inquiry.payment_status).toUpperCase()}${
+                  inquiry.payment_plan ? ` (${inquiry.payment_plan})` : ''
+              }${inquiry.payment_amount ? ` — ₹${inquiry.payment_amount}/-` : ''}`
+            : null;
+
+    const rows = [
+        ['Full Name', inquiry.name || 'Website Visitor'],
+        ['Email Address', inquiry.email || ''],
+        inquiry.phone ? ['Phone / WhatsApp', inquiry.phone] : null,
+        inquiry.company ? ['Company / Organization', inquiry.company] : null,
+        inquiry.service ? ['Service / Product', inquiry.service] : null,
+        inquiry.product && inquiry.product !== inquiry.service ? ['Product', inquiry.product] : null,
+        inquiry.timeline ? ['Target Timeline', inquiry.timeline] : null,
+        inquiry.categories ? ['Categories', Array.isArray(inquiry.categories) ? inquiry.categories.join(', ') : String(inquiry.categories)] : null,
+        inquiry.form_source ? ['Form Source', inquiry.form_source] : null,
+        preBookingDisplay ? ['Pre-Booking / Payment', preBookingDisplay] : null,
+        inquiry.payment_reference ? ['Payment Reference', inquiry.payment_reference] : null,
+        inquiry.page_url ? ['Submitted From URL', inquiry.page_url] : null,
+        ['Subject', inquiry.subject || 'Website Form Submission']
+    ].filter(Boolean);
 
     const lines = [
         '=== DevInquire Website Form Submission ===',
         '',
-        `Full Name: ${inquiry.name}`,
-        `Email: ${inquiry.email}`,
-        inquiry.phone ? `Phone / WhatsApp: ${inquiry.phone}` : null,
-        inquiry.company ? `Company: ${inquiry.company}` : null,
-        inquiry.service ? `Service / Product: ${inquiry.service}` : null,
-        inquiry.timeline ? `Timeline: ${inquiry.timeline}` : null,
-        inquiry.form_source ? `Form Source: ${inquiry.form_source}` : null,
-        inquiry.payment_status && inquiry.payment_status !== 'none'
-            ? `Pre-Booking / Payment: ${String(inquiry.payment_status).toUpperCase()}${
-                  inquiry.payment_plan ? ` (${inquiry.payment_plan})` : ''
-              }${inquiry.payment_amount ? ` — ₹${inquiry.payment_amount}/-` : ''}`
-            : null,
-        inquiry.payment_reference ? `Payment Reference: ${inquiry.payment_reference}` : null,
-        `Subject: ${inquiry.subject}`,
+        ...rows.map(([label, val]) => `${label}: ${val}`),
         '',
         '--- Message / Details ---',
-        inquiry.message
-    ].filter((l) => l !== null);
+        inquiry.message || ''
+    ];
 
+    const htmlRows = rows
+        .map(
+            ([label, val]) => `
+            <tr>
+              <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;font-weight:600;color:#374151;width:190px;vertical-align:top;">${escapeHtml(label)}</td>
+              <td style="padding:8px 12px;border-bottom:1px solid #e5e7eb;color:#111827;">${escapeHtml(val)}</td>
+            </tr>`
+        )
+        .join('');
+
+    const htmlBody = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:640px;margin:0 auto;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;background:#ffffff;">
+        <div style="background:#111827;color:#ffffff;padding:18px 24px;">
+          <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.08em;color:#a5b4fc;font-weight:600;">DevInquire Live Website Intake</div>
+          <h2 style="margin:6px 0 0;font-size:18px;font-weight:600;">${escapeHtml(inquiry.subject || 'New Website Form Submission')}</h2>
+        </div>
+        <div style="padding:20px 24px;">
+          <table style="width:100%;border-collapse:collapse;font-size:14px;">
+            ${htmlRows}
+          </table>
+          <div style="margin-top:18px;padding:14px 16px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;">
+            <div style="font-size:12px;font-weight:600;text-transform:uppercase;color:#6b7280;margin-bottom:6px;">Message / Project Details</div>
+            <div style="font-size:14px;color:#111827;white-space:pre-wrap;line-height:1.55;">${escapeHtml(inquiry.message || '')}</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const mailSubject = String(inquiry.subject || 'Website Form Submission');
     await transporter.sendMail({
         from: `"${fromName}" <${fromEmail}>`,
         to: recipient,
-        replyTo: inquiry.email,
-        subject: inquiry.subject.startsWith('[') ? inquiry.subject : `New Inquiry: ${inquiry.subject}`,
-        text: lines.join('\n')
+        replyTo: inquiry.email || fromEmail,
+        subject: mailSubject.startsWith('[') ? mailSubject : `[DevInquire] ${mailSubject}`,
+        text: lines.join('\n'),
+        html: htmlBody
     });
 
-    if (config.autoReplyEnabled !== false && inquiry.email) {
-        const replyBody = (config.autoReplyTemplate || 'Hello {{name}}, thank you for reaching out to DevInquire. We have received your inquiry regarding "{{subject}}" and will respond within 24 hours.')
+    if (
+        config.autoReplyEnabled !== false &&
+        inquiry.email &&
+        inquiry.email.toLowerCase() !== recipient.toLowerCase() &&
+        inquiry.service !== 'Newsletter'
+    ) {
+        const replyBody = (
+            config.autoReplyTemplate ||
+            'Hello {{name}}, thank you for reaching out to DevInquire. We have received your inquiry regarding "{{subject}}" and will respond within 24 hours.'
+        )
             .replace(/\{\{name\}\}/g, inquiry.name || 'Client')
             .replace(/\{\{subject\}\}/g, inquiry.subject || 'your inquiry');
 
-        await transporter.sendMail({
-            from: `"${fromName}" <${fromEmail}>`,
-            to: inquiry.email,
-            subject: config.autoReplySubject || 'Thank you for contacting DevInquire',
-            text: replyBody
-        }).catch(() => {});
+        await transporter
+            .sendMail({
+                from: `"${fromName}" <${fromEmail}>`,
+                to: inquiry.email,
+                replyTo: recipient,
+                subject: config.autoReplySubject || 'Thank you for contacting DevInquire',
+                text: replyBody
+            })
+            .catch(() => {});
     }
 
     return true;
@@ -263,6 +362,7 @@ router.post(contactIntakePaths, async (req, res) => {
                 ]
             );
 
+            let updatedEmailSent = false;
             if (nextPaymentStatus === 'paid' && targetExisting.payment_status !== 'paid') {
                 await createNotification(
                     null,
@@ -271,11 +371,31 @@ router.post(contactIntakePaths, async (req, res) => {
                     `${cleanName} (${cleanEmail}) completed ${normalizePlanLabel(payment_plan, service)}.`,
                     '/contacts'
                 ).catch(() => {});
+
+                updatedEmailSent = await dispatchInquiryEmail(config, {
+                    name: cleanName || targetExisting.name,
+                    email: cleanEmail,
+                    phone: phone || targetExisting.phone || '',
+                    company: company || targetExisting.company || '',
+                    service: service || targetExisting.service || '',
+                    product: body.product || '',
+                    timeline: timeline || targetExisting.timeline || '',
+                    categories: body.categories,
+                    page_url: body.page_url || body.pageUrl || '',
+                    form_source: resolvedSource || targetExisting.form_source || 'Website Form',
+                    payment_status: 'paid',
+                    payment_plan: normalizePlanLabel(payment_plan || targetExisting.payment_plan, service || targetExisting.service),
+                    payment_amount: resolvedAmount || Number(targetExisting.payment_amount) || 0,
+                    payment_reference: payment_reference || targetExisting.payment_reference || '',
+                    subject: updatedSubject,
+                    message: targetExisting.message || cleanMessage
+                }).catch(() => false);
             }
 
             return sendJsonResponse(res, "success", "Inquiry & payment status updated in dashboard ledger.", {
                 id: String(targetExisting.id),
                 updated: true,
+                emailSent: updatedEmailSent,
                 payment_status: nextPaymentStatus
             });
         }
@@ -369,7 +489,10 @@ router.post(contactIntakePaths, async (req, res) => {
             phone: phone || '',
             company: company || '',
             service: service || '',
+            product: body.product || '',
             timeline: timeline || '',
+            categories: body.categories,
+            page_url: body.page_url || body.pageUrl || '',
             form_source: resolvedSource,
             payment_status: resolvedPaymentStatus,
             payment_plan: payment_plan || '',
@@ -610,6 +733,7 @@ router.post(paymentConfirmPaths, async (req, res) => {
                 .catch(() => {});
         }
 
+        let newPaidEmailSent = false;
         if (resolvedStatus === 'paid') {
             await createNotification(
                 null,
@@ -618,16 +742,50 @@ router.post(paymentConfirmPaths, async (req, res) => {
                 `${fallbackName} (${fallbackEmail}) — ${planTitle}`,
                 '/contacts'
             ).catch(() => {});
+
+            const config = db.getSettings('contacts_config');
+            newPaidEmailSent = await dispatchInquiryEmail(config, {
+                name: fallbackName,
+                email: fallbackEmail,
+                phone: phone || '',
+                company: company || '',
+                service: service || planTitle,
+                timeline: timeline || '',
+                form_source: form_source || 'Stripe Pre-Booking',
+                payment_status: 'paid',
+                payment_plan: planTitle,
+                payment_amount: resolvedAmount,
+                payment_reference: payment_reference || '',
+                subject: createdSubject,
+                message: createdMsg
+            }).catch(() => false);
         }
 
         return sendJsonResponse(res, "success", "Payment inquiry recorded in dashboard ledger.", {
             id: newId ? String(newId) : null,
+            emailSent: newPaidEmailSent,
             payment_status: resolvedStatus
         });
     } catch (err) {
         console.error("Public Payment Confirm Error:", err);
         return sendJsonResponse(res, "error", "Failed to confirm payment on inquiry.", null, 500);
     }
+});
+
+// Public Read-Only Mail Status Check (Never exposes passwords)
+router.get(['/mail_status', '/mail_status.php'], (req, res) => {
+    const config = db.getSettings('contacts_config');
+    const settings = resolveSmtpSettings(config);
+    return sendJsonResponse(res, "success", "Mail transport status retrieved.", {
+        smtpConfigured: Boolean(settings.smtpUser && settings.smtpPass),
+        smtpHost: settings.smtpHost,
+        smtpPort: settings.smtpPort,
+        secure: settings.secure,
+        fromEmail: settings.fromEmail,
+        recipientEmail: settings.recipient,
+        autoReplyEnabled: config.autoReplyEnabled !== false,
+        web3FormsFallbackEnabled: config.web3FormsEnabled !== false
+    });
 });
 
 // Public List Blog Posts API

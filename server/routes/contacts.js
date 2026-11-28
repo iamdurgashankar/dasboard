@@ -10,6 +10,7 @@ import {
     requireMutatingAuth,
     createNotification
 } from '../utils.js';
+import { createSmtpTransporter, resolveSmtpSettings } from './public.js';
 
 const router = express.Router();
 
@@ -18,6 +19,7 @@ const createPaths = ['/create', '/create.php'];
 const updatePaths = ['/update', '/update.php'];
 const deletePaths = ['/delete', '/delete.php'];
 const configPaths = ['/config', '/config.php'];
+const testSmtpPaths = ['/test-smtp', '/test_smtp', '/test-smtp.php'];
 
 // Get Client Inquiry Configuration
 router.get(configPaths, requireAuth, async (req, res) => {
@@ -33,11 +35,75 @@ router.get(configPaths, requireAuth, async (req, res) => {
 // Update Client Inquiry Configuration (Admin)
 router.post(configPaths, requireMutatingAuth, async (req, res) => {
     try {
-        const updated = db.updateSettings('contacts_config', req.body || {});
+        const updated = await db.updateSettingsAsync('contacts_config', req.body || {});
         return sendJsonResponse(res, "success", "Inquiry configuration saved.", updated);
     } catch (err) {
         console.error("Contact Config Save Error:", err);
         return sendJsonResponse(res, "error", "Failed to save inquiry configuration.", null, 500);
+    }
+});
+
+// Verify & Send Live Test Email via Configured SMTP (Admin)
+router.post(testSmtpPaths, requireMutatingAuth, async (req, res) => {
+    try {
+        const existingConfig = db.getSettings('contacts_config');
+        const mergedConfig = {
+            ...existingConfig,
+            ...(req.body || {})
+        };
+        if (
+            (mergedConfig.smtpPass === undefined || mergedConfig.smtpPass === '' || mergedConfig.smtpPass === '********') &&
+            existingConfig.smtpPass
+        ) {
+            mergedConfig.smtpPass = existingConfig.smtpPass;
+        }
+
+        const { transporter, settings } = createSmtpTransporter(mergedConfig);
+        if (!transporter) {
+            return sendJsonResponse(
+                res,
+                "error",
+                "Please enter your Hostinger mailbox password (for contact@devinquire.com) before testing.",
+                null,
+                400
+            );
+        }
+
+        await transporter.verify();
+        await transporter.sendMail({
+            from: `"${settings.fromName}" <${settings.fromEmail}>`,
+            to: settings.recipient,
+            replyTo: settings.fromEmail,
+            subject: `[DevInquire Live SMTP Verified] Hostinger Mailbox Connected`,
+            text: [
+                'Your live DevInquire Hostinger SMTP configuration is active and verified!',
+                '',
+                `SMTP Host: ${settings.smtpHost}:${settings.smtpPort} (${settings.secure ? 'SSL/TLS' : 'STARTTLS'})`,
+                `Authenticated Mailbox: ${settings.smtpUser}`,
+                `From Address: ${settings.fromEmail}`,
+                `Recipient Mailbox: ${settings.recipient}`,
+                `Timestamp: ${new Date().toISOString()}`,
+                '',
+                'All live form submissions from https://devinquire.com (Contact, Services, Product Demo, Newsletter, and Stripe Pre-Bookings) now deliver directly to this mailbox.'
+            ].join('\n')
+        });
+
+        const saved = await db.updateSettingsAsync('contacts_config', mergedConfig);
+        return sendJsonResponse(
+            res,
+            "success",
+            `Live Hostinger SMTP verified! Test email delivered to ${settings.recipient}.`,
+            saved
+        );
+    } catch (err) {
+        console.error("Live SMTP Test Error:", err);
+        const rawMsg = err?.message || "SMTP connection failed.";
+        const hint = /535|auth/i.test(rawMsg)
+            ? "Authentication failed (535). Double-check the mailbox password for contact@devinquire.com in Hostinger hPanel → Emails."
+            : /553|sender/i.test(rawMsg)
+            ? "Sender rejected (553). Ensure From Email matches your Hostinger mailbox (contact@devinquire.com)."
+            : rawMsg;
+        return sendJsonResponse(res, "error", `SMTP Error: ${hint}`, null, 400);
     }
 });
 
@@ -522,7 +588,31 @@ router.post(updatePaths, requireMutatingAuth, async (req, res) => {
         const query = `UPDATE contacts SET ${fields.join(', ')} WHERE id = $${paramCount}`;
         await db.query(query, params);
 
-        return sendJsonResponse(res, "success", "Inquiry state updated.");
+        let replyEmailSent = false;
+        if (reply_message !== undefined && String(reply_message).trim() !== '') {
+            try {
+                const rowRes = await db.query('SELECT name, email, subject FROM contacts WHERE id = $1 LIMIT 1', [id]);
+                const row = rowRes.rows?.[0];
+                const recipientTo = (email || row?.email || '').trim();
+                const config = db.getSettings('contacts_config');
+                const { transporter, settings } = createSmtpTransporter(config);
+                if (transporter && recipientTo) {
+                    const subjBase = subject || row?.subject || 'Your Inquiry with DevInquire';
+                    await transporter.sendMail({
+                        from: `"${settings.fromName}" <${settings.fromEmail}>`,
+                        to: recipientTo,
+                        replyTo: settings.recipient,
+                        subject: /^re:/i.test(subjBase) ? subjBase : `Re: ${subjBase}`,
+                        text: String(reply_message).trim()
+                    });
+                    replyEmailSent = true;
+                }
+            } catch (replyMailErr) {
+                console.warn("Admin reply SMTP dispatch warning:", replyMailErr.message);
+            }
+        }
+
+        return sendJsonResponse(res, "success", "Inquiry state updated.", { replyEmailSent });
     } catch (err) {
         console.error("Contact Update API Error:", err);
         return sendJsonResponse(res, "error", "Failed to update inquiry state.", null, 500);
